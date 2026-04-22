@@ -21,7 +21,7 @@ from .comment_panel import CommentPanel
 from .settings_dialog import SettingsDialog
 from .about_dialog import AboutDialog
 from .find_replace_dialog import FindReplaceDialog
-from .canvas_panel import NAV_STYLE_CAD
+from .navigation_service import NAV_STYLE_CAD
 from ..gcode.grbl_versions import DEFAULT_VERSION
 from ..gcode.parser import GCodeParser
 from ..analyzer.analyzer import GCodeAnalyzer, WarningSeverity
@@ -426,41 +426,29 @@ class MainWindow(QMainWindow):
 
     def _on_find_next_requested(self, term: str, use_regex: bool, search_in_selection: bool) -> None:
         if self._editor_panel.find_next(term, use_regex, search_in_selection):
-            self._find_replace_dialog.set_status(self._tr("status.search_found").format(term=term))
+            count = self._editor_panel.get_search_match_count()
+            self._find_replace_dialog.set_status(self._tr("status.search_matches").format(count=count))
         else:
             self._find_replace_dialog.set_status(self._tr("status.search_not_found").format(term=term))
 
     def _on_find_previous_requested(self, term: str, use_regex: bool, search_in_selection: bool) -> None:
         if self._editor_panel.find_previous(term, use_regex, search_in_selection):
-            self._find_replace_dialog.set_status(self._tr("status.search_found").format(term=term))
+            count = self._editor_panel.get_search_match_count()
+            self._find_replace_dialog.set_status(self._tr("status.search_matches").format(count=count))
         else:
             self._find_replace_dialog.set_status(self._tr("status.search_not_found").format(term=term))
 
     def _on_replace_next_requested(self, needle: str, replacement: str, use_regex: bool, search_in_selection: bool) -> None:
         if self._editor_panel.replace_next(needle, replacement, use_regex, search_in_selection):
             self._find_replace_dialog.set_status(self._tr("status.replaced_one").format(term=needle))
-            self._loaded_content = self._editor_panel.get_content()
-            self._set_dirty(True)
-            self._load_content(
-                self._loaded_content,
-                label=self._loaded_path or self._tr("title.untitled"),
-                reparse=True,
-            )
-            self._on_editor_lines_selected(self._editor_panel.get_selected_lines())
+            self._post_replace_refresh()
         else:
             self._find_replace_dialog.set_status(self._tr("status.search_not_found").format(term=needle))
 
     def _on_replace_previous_requested(self, needle: str, replacement: str, use_regex: bool, search_in_selection: bool) -> None:
         if self._editor_panel.replace_previous(needle, replacement, use_regex, search_in_selection):
             self._find_replace_dialog.set_status(self._tr("status.replaced_one").format(term=needle))
-            self._loaded_content = self._editor_panel.get_content()
-            self._set_dirty(True)
-            self._load_content(
-                self._loaded_content,
-                label=self._loaded_path or self._tr("title.untitled"),
-                reparse=True,
-            )
-            self._on_editor_lines_selected(self._editor_panel.get_selected_lines())
+            self._post_replace_refresh()
         else:
             self._find_replace_dialog.set_status(self._tr("status.search_not_found").format(term=needle))
 
@@ -468,16 +456,20 @@ class MainWindow(QMainWindow):
         count = self._editor_panel.replace_all(needle, replacement, use_regex, search_in_selection)
         if count > 0:
             self._find_replace_dialog.set_status(self._tr("status.replaced").format(count=count))
-            self._loaded_content = self._editor_panel.get_content()
-            self._set_dirty(True)
-            self._load_content(
-                self._loaded_content,
-                label=self._loaded_path or self._tr("title.untitled"),
-                reparse=True,
-            )
-            self._on_editor_lines_selected(self._editor_panel.get_selected_lines())
+            self._post_replace_refresh()
         else:
             self._find_replace_dialog.set_status(self._tr("status.search_not_found").format(term=needle))
+
+    def _post_replace_refresh(self) -> None:
+        """Refresh parsed panels and re-sync selection after replace operations."""
+        self._loaded_content = self._editor_panel.get_content()
+        self._set_dirty(True)
+        self._load_content(
+            self._loaded_content,
+            label=self._loaded_path or self._tr("title.untitled"),
+            reparse=True,
+        )
+        self._on_editor_lines_selected(self._editor_panel.get_selected_lines())
 
     def _refresh_recent_menu(self) -> None:
         self._recent_menu.clear()

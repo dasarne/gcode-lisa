@@ -19,6 +19,12 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import QRegularExpression
 
 from ..analyzer.analyzer import AnalysisWarning, WarningSeverity
+from .search_service import (
+    compute_match_ranges,
+    find_next_match,
+    find_previous_match,
+    replace_all_in_ranges,
+)
 from .widgets import GCodeEditor
 
 _SEVERITY_COLORS: dict[WarningSeverity, str] = {
@@ -108,6 +114,7 @@ class EditorPanel(QWidget):
         self._multi_selected_lines: set[int] = set()
         self._suppress_cursor_events = False
         self._suppress_text_change = False
+        self._managed_search_edit = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -377,11 +384,10 @@ class EditorPanel(QWidget):
             return False
 
         anchor = cursor.selectionEnd() if cursor.hasSelection() else cursor.position()
-        for start, end in self._search_matches:
-            if start >= anchor:
-                self._select_range(start, end)
-                return True
-        self._select_range(*self._search_matches[0])
+        match = find_next_match(self._search_matches, anchor)
+        if match is None:
+            return False
+        self._select_range(*match)
         return True
 
     def find_previous(self, term: str, use_regex: bool = False, search_in_selection: bool = False) -> bool:
@@ -397,12 +403,15 @@ class EditorPanel(QWidget):
             return False
 
         anchor = cursor.selectionStart() if cursor.hasSelection() else cursor.position()
-        for start, end in reversed(self._search_matches):
-            if end <= anchor:
-                self._select_range(start, end)
-                return True
-        self._select_range(*self._search_matches[-1])
+        match = find_previous_match(self._search_matches, anchor)
+        if match is None:
+            return False
+        self._select_range(*match)
         return True
+
+    def get_search_match_count(self) -> int:
+        """Return the number of currently cached search matches."""
+        return len(self._search_matches)
 
     def preview_search(
         self,
@@ -413,6 +422,23 @@ class EditorPanel(QWidget):
         """Incremental search preview: keep match selected and return hit count."""
         cursor = self._text_edit.textCursor()
         self._update_search_scope(cursor, search_in_selection)
+        # When the scope was just locked from the cursor's current selection,
+        # that selection (orange QPalette highlight) would cover the green
+        # match highlights.  Move the cursor to scope start to make them visible.
+        if (
+            search_in_selection
+            and self._search_scope is not None
+            and cursor.hasSelection()
+            and cursor.selectionStart() == self._search_scope[0]
+            and cursor.selectionEnd() == self._search_scope[1]
+        ):
+            cleared = QTextCursor(self._text_edit.document())
+            cleared.setPosition(self._search_scope[0])
+            self._suppress_cursor_events = True
+            self._text_edit.setTextCursor(cleared)
+            self._suppress_cursor_events = False
+            cursor = cleared
+
         if not term:
             self._search_matches = []
             self._apply_extra_selections()
@@ -425,7 +451,7 @@ class EditorPanel(QWidget):
             self._apply_extra_selections()
             return (False, 0)
 
-        self._search_matches = self._compute_match_ranges(term, use_regex, content, ranges)
+        self._search_matches = compute_match_ranges(term, use_regex, content, ranges)
         self._apply_extra_selections()
         count = len(self._search_matches)
         # Do not move the text cursor during incremental preview typing.
@@ -448,9 +474,18 @@ class EditorPanel(QWidget):
         if not self.find_next(needle, use_regex=False, search_in_selection=search_in_selection):
             return False
         cursor = self._text_edit.textCursor()
-        cursor.removeSelectedText()
-        cursor.insertText(replacement)
-        self._text_edit.setTextCursor(cursor)
+        match_start = cursor.selectionStart()
+        match_end = cursor.selectionEnd()
+        self._managed_search_edit = True
+        try:
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.insertText(replacement)
+            cursor.endEditBlock()
+            self._text_edit.setTextCursor(cursor)
+            self._shift_scope_after_replace(match_start, match_end, len(replacement))
+        finally:
+            self._managed_search_edit = False
         return True
 
     def replace_previous(
@@ -466,12 +501,24 @@ class EditorPanel(QWidget):
         cursor = self._text_edit.textCursor()
         if use_regex:
             return self._replace_regex_previous(needle, replacement, cursor, search_in_selection)
-        if not self.find_previous(needle, use_regex=False, search_in_selection=search_in_selection):
-            return False
-        cursor = self._text_edit.textCursor()
-        cursor.removeSelectedText()
-        cursor.insertText(replacement)
-        self._text_edit.setTextCursor(cursor)
+        if not self._selection_matches_query(cursor, needle, use_regex=False):
+            if not self.find_previous(needle, use_regex=False, search_in_selection=search_in_selection):
+                return False
+            cursor = self._text_edit.textCursor()
+        match_start = cursor.selectionStart()
+        match_end = cursor.selectionEnd()
+        self._managed_search_edit = True
+        try:
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.insertText(replacement)
+            cursor.endEditBlock()
+            self._text_edit.setTextCursor(cursor)
+            self._shift_scope_after_replace(match_start, match_end, len(replacement))
+        finally:
+            self._managed_search_edit = False
+        self._move_cursor_to_position(match_start)
+        self.find_previous(needle, use_regex=False, search_in_selection=search_in_selection)
         return True
 
     def replace_all(
@@ -492,31 +539,13 @@ class EditorPanel(QWidget):
         if ranges is None:
             return 0
 
-        try:
-            new_content = content
-            count = 0
-            for start_bound, end_bound in reversed(ranges):
-                target = new_content[start_bound:end_bound]
-                if use_regex:
-                    new_target, local_count = re.subn(
-                        needle,
-                        replacement,
-                        target,
-                        flags=re.MULTILINE,
-                    )
-                else:
-                    local_count = target.count(needle)
-                    new_target = target.replace(needle, replacement)
-                if local_count == 0:
-                    continue
-                count += local_count
-                new_content = (
-                    new_content[:start_bound]
-                    + new_target
-                    + new_content[end_bound:]
-                )
-        except re.error:
-            return 0
+        new_content, count = replace_all_in_ranges(
+            content,
+            ranges,
+            needle,
+            replacement,
+            use_regex,
+        )
         if count == 0:
             return 0
 
@@ -535,18 +564,23 @@ class EditorPanel(QWidget):
         edit_cursor.endEditBlock()
 
         max_pos = len(new_content)
-        restore_anchor = max(0, min(prev_anchor, max_pos))
         restore_pos = max(0, min(prev_pos, max_pos))
         restore_cursor = self._text_edit.textCursor()
-        restore_cursor.setPosition(restore_anchor)
-        restore_cursor.setPosition(restore_pos, QTextCursor.MoveMode.KeepAnchor)
+        # Do NOT restore the selection anchor – after content changed, the old
+        # selection offsets are wrong and would leave a stale _search_scope that
+        # causes double-replacements on the next operation.
+        restore_cursor.setPosition(restore_pos)
         self._suppress_cursor_events = True
         self._text_edit.setTextCursor(restore_cursor)
         self._suppress_cursor_events = False
         self._text_edit.verticalScrollBar().setValue(prev_vscroll)
         self._text_edit.horizontalScrollBar().setValue(prev_hscroll)
 
-        self._apply_extra_selections(restore_cursor)
+        # Invalidate scope and match cache – positions are meaningless in the
+        # new content.  The next interaction will re-establish them.
+        self._search_scope = None
+        self._search_matches = []
+        self._apply_extra_selections()
         self._suppress_text_change = False
         return count
 
@@ -660,9 +694,18 @@ class EditorPanel(QWidget):
         cursor = self._text_edit.textCursor()
         match_text = cursor.selectedText()
         new_text = regex.sub(replacement, match_text, count=1)
-        cursor.removeSelectedText()
-        cursor.insertText(new_text)
-        self._text_edit.setTextCursor(cursor)
+        match_start = cursor.selectionStart()
+        match_end = cursor.selectionEnd()
+        self._managed_search_edit = True
+        try:
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.insertText(new_text)
+            cursor.endEditBlock()
+            self._text_edit.setTextCursor(cursor)
+            self._shift_scope_after_replace(match_start, match_end, len(new_text))
+        finally:
+            self._managed_search_edit = False
         return True
 
     def _replace_regex_previous(
@@ -677,15 +720,82 @@ class EditorPanel(QWidget):
             regex = re.compile(pattern, re.MULTILINE)
         except re.error:
             return False
-        if not self.find_previous(pattern, use_regex=True, search_in_selection=search_in_selection):
-            return False
-        cursor = self._text_edit.textCursor()
+        if not self._selection_matches_query(cursor, pattern, use_regex=True):
+            if not self.find_previous(pattern, use_regex=True, search_in_selection=search_in_selection):
+                return False
+            cursor = self._text_edit.textCursor()
         match_text = cursor.selectedText()
         new_text = regex.sub(replacement, match_text, count=1)
-        cursor.removeSelectedText()
-        cursor.insertText(new_text)
-        self._text_edit.setTextCursor(cursor)
+        match_start = cursor.selectionStart()
+        match_end = cursor.selectionEnd()
+        self._managed_search_edit = True
+        try:
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.insertText(new_text)
+            cursor.endEditBlock()
+            self._text_edit.setTextCursor(cursor)
+            self._shift_scope_after_replace(match_start, match_end, len(new_text))
+        finally:
+            self._managed_search_edit = False
+        self._move_cursor_to_position(match_start)
+        self.find_previous(pattern, use_regex=True, search_in_selection=search_in_selection)
         return True
+
+    def _move_cursor_to_position(self, position: int) -> None:
+        """Move the text cursor to a plain insertion point without selection."""
+        cursor = self._text_edit.textCursor()
+        cursor.setPosition(position)
+        self._suppress_cursor_events = True
+        self._text_edit.setTextCursor(cursor)
+        self._suppress_cursor_events = False
+
+    def _selection_matches_query(
+        self,
+        cursor: QTextCursor,
+        term: str,
+        use_regex: bool,
+    ) -> bool:
+        """Return whether the current selection itself is a match for the query."""
+        if not cursor.hasSelection():
+            return False
+        selected_text = cursor.selectedText()
+        if use_regex:
+            try:
+                return re.fullmatch(term, selected_text, re.MULTILINE) is not None
+            except re.error:
+                return False
+        return selected_text == term
+
+    def _shift_scope_after_replace(
+        self, match_start: int, match_end: int, new_len: int
+    ) -> None:
+        """Adjust _search_scope and _search_matches after a single replacement.
+
+        After replacing text the document length changes by
+        ``new_len - (match_end - match_start)``.  The scope end and every
+        cached match position that lies after the replacement must be shifted
+        by that delta so highlights and subsequent searches stay correct.
+        """
+        delta = new_len - (match_end - match_start)
+
+        # Shift scope end.
+        if self._search_scope is not None:
+            scope_start, scope_end = self._search_scope
+            if match_end <= scope_end:
+                self._search_scope = (scope_start, scope_end + delta)
+
+        # Remove the replaced match and shift all following ones.
+        updated: list[tuple[int, int]] = []
+        for ms, me in self._search_matches:
+            if me <= match_start:
+                # Entirely before the replacement – unchanged.
+                updated.append((ms, me))
+            elif ms >= match_end:
+                # Entirely after the replacement – shift by delta.
+                updated.append((ms + delta, me + delta))
+            # else: this was the replaced match itself – drop it.
+        self._search_matches = updated
 
     def _get_search_bounds(
         self,
@@ -741,17 +851,14 @@ class EditorPanel(QWidget):
                 self._apply_extra_selections(cursor)
             return
 
-        if cursor.hasSelection():
-            new_scope = (cursor.selectionStart(), cursor.selectionEnd())
-            if self._search_scope != new_scope:
-                self._search_scope = new_scope
-                self._apply_extra_selections(cursor)
+        # Scope already locked from a prior user selection.  Never overwrite
+        # it with a (smaller) match selection placed by find_next/_select_range.
+        # Released only when search_in_selection becomes False.
+        if self._search_scope is not None:
             return
 
-        # Selection mode is active but there is no current selection anymore.
-        if self._search_scope is not None:
-            self._search_scope = None
-            self._search_matches = []
+        if cursor.hasSelection():
+            self._search_scope = (cursor.selectionStart(), cursor.selectionEnd())
             self._apply_extra_selections(cursor)
 
     def _count_matches(
@@ -761,7 +868,7 @@ class EditorPanel(QWidget):
         content: str,
         bounds: tuple[int, int],
     ) -> int:
-        return len(self._compute_match_ranges(term, use_regex, content, [bounds]))
+        return len(compute_match_ranges(term, use_regex, content, [bounds]))
 
     def _update_search_matches(
         self,
@@ -776,7 +883,7 @@ class EditorPanel(QWidget):
             self._search_matches = []
             self._apply_extra_selections(cursor)
             return
-        self._search_matches = self._compute_match_ranges(term, use_regex, content, ranges)
+        self._search_matches = compute_match_ranges(term, use_regex, content, ranges)
         self._apply_extra_selections(cursor)
 
     def _compute_match_ranges(
@@ -786,28 +893,7 @@ class EditorPanel(QWidget):
         content: str,
         ranges: list[tuple[int, int]],
     ) -> list[tuple[int, int]]:
-        results: list[tuple[int, int]] = []
-        for start_bound, end_bound in ranges:
-            target = content[start_bound:end_bound]
-
-            if use_regex:
-                try:
-                    for match in re.finditer(term, target, flags=re.MULTILINE):
-                        results.append((start_bound + match.start(), start_bound + match.end()))
-                except re.error:
-                    return []
-                continue
-
-            start = 0
-            while True:
-                index = target.find(term, start)
-                if index == -1:
-                    break
-                begin = start_bound + index
-                end = begin + len(term)
-                results.append((begin, end))
-                start = index + len(term)
-        return results
+        return compute_match_ranges(term, use_regex, content, ranges)
 
     def _select_range(self, start: int, end: int) -> None:
         new_cursor = self._text_edit.textCursor()
@@ -854,7 +940,20 @@ class EditorPanel(QWidget):
     def _on_text_changed(self) -> None:
         if self._suppress_text_change:
             return
+        if not self._managed_search_edit:
+            self._invalidate_search_state()
         self.content_changed.emit(self.get_content())
+
+    def _invalidate_search_state(self) -> None:
+        """Clear cached search overlays after arbitrary document edits.
+
+        Undo/redo and free typing can move or delete text without going through
+        the managed search-replace path, so cached absolute match offsets are no
+        longer trustworthy after such edits.
+        """
+        self._search_scope = None
+        self._search_matches = []
+        self._apply_extra_selections()
 
     def _apply_extra_selections(self, cursor: QTextCursor | None = None) -> None:
         """Apply warning-line and current-line overlays."""

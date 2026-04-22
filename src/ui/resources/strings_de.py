@@ -102,9 +102,10 @@ STRINGS: dict[str, str] = {
     "about.label.qt": "Qt",
     "about.label.license": "Lizenz",
     "about.contributors.text": (
-        "GCode Lisa wird als fokussiertes G-Code-Werkzeug für CNC entwickelt.\n\n"
-        "Entwicklung: Arne von Irmer und ChatGPT.\n"
-        "Das Projekt lebt im öffentlichen Repository unter github.com/dasarne/grbl-visualizer.\n"
+        "GCode Lisa wird als fokussiertes G-Code-Werkzeug für CNC entwickelt.<br><br>"
+        "Entwicklung: Arne von Irmer und ChatGPT.<br>"
+        "Das Projekt lebt im öffentlichen Repository unter "
+        '<a href="https://github.com/dasarne/grbl-visualizer">github.com/dasarne/grbl-visualizer</a>.<br>'
         "Beiträge sind willkommen."
     ),
     "about.license.text": (
@@ -123,6 +124,12 @@ STRINGS: dict[str, str] = {
         "G-Code-Dateien an Cloud-Dienste.\n\n"
         "Dateiverlauf und Einstellungen werden lokal gespeichert."
     ),
+    "about.sponsor.text": (
+        "Unabhängige Software für Maker und kleine Werkstätten lebt von "
+        "privatem Engagement und kontinuierlicher Pflege."
+    ),
+    "about.sponsor.link": "Entwicklung über GitHub Sponsors unterstützen",
+    "about.sponsor.url": "https://github.com/sponsors/dasarne",
 
     # -----------------------------------------------------------------------
     # Settings dialog

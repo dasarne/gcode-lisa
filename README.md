@@ -98,3 +98,13 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for environment setup, testing, and code st
 3. Make your changes following the code style guidelines in DEVELOPMENT.md
 4. Run tests: `pytest tests/`
 5. Submit a pull request using the PR template
+
+## Support The Project
+
+GCode Lisa is maintained as an independent project. Reliable, practical CNC
+software in the open-source ecosystem depends heavily on private engagement:
+time for bug fixes, user support, compatibility updates, and long-term care.
+
+If you want to support ongoing development, you can sponsor the project here:
+
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/dasarne?label=Sponsor&logo=GitHub)](https://github.com/sponsors/dasarne)

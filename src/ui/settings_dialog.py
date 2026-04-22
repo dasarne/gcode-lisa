@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..gcode.grbl_versions import GRBL_VERSIONS, DEFAULT_VERSION, get_version
-from .canvas_panel import (
+from .navigation_service import (
     NAV_STYLE_BLENDER,
     NAV_STYLE_CAD,
     NAV_STYLE_GESTURE,

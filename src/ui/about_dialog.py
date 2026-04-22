@@ -82,6 +82,17 @@ class AboutDialog(QDialog):
 		link.setAlignment(Qt.AlignmentFlag.AlignCenter)
 		card_layout.addWidget(link)
 
+		sponsor_text = QLabel(t["sponsor.text"])
+		sponsor_text.setWordWrap(True)
+		sponsor_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		card_layout.addWidget(sponsor_text)
+
+		sponsor_link = QLabel(f'<a href="{t["sponsor.url"]}">{t["sponsor.link"]}</a>')
+		sponsor_link.setOpenExternalLinks(False)
+		sponsor_link.linkActivated.connect(lambda url: QDesktopServices.openUrl(QUrl(url)))
+		sponsor_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		card_layout.addWidget(sponsor_link)
+
 		layout.addWidget(card)
 
 		grid = QGridLayout()
@@ -104,6 +115,7 @@ class AboutDialog(QDialog):
 		label = QLabel(text)
 		label.setWordWrap(True)
 		label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+		label.setOpenExternalLinks(True)
 		layout.addWidget(label)
 		return w
 
@@ -124,4 +136,7 @@ class AboutDialog(QDialog):
 			"license.text": s["about.license.text"],
 			"libraries.text": s["about.libraries.text"],
 			"privacy.text": s["about.privacy.text"],
+			"sponsor.text": s["about.sponsor.text"],
+			"sponsor.link": s["about.sponsor.link"],
+			"sponsor.url": s["about.sponsor.url"],
 		}

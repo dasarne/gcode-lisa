@@ -235,6 +235,17 @@ class FindReplaceDialog(QDialog):
         else:
             super().keyPressEvent(event)
 
+    def showEvent(self, event) -> None:
+        """Clear stale status and refresh match highlights whenever the dialog becomes visible."""
+        super().showEvent(event)
+        self._status_label.setText("")
+        # Re-emit search_updated so the editor immediately highlights matches
+        # (also handles the case where the dialog is re-shown after being closed).
+        term = self._find_input.text()
+        use_regex = self._regex_check.isChecked()
+        search_in_selection = self._selection_check.isChecked()
+        self.search_updated.emit(term, use_regex, search_in_selection)
+
     def closeEvent(self, event) -> None:
         self.dialog_closed.emit()
         super().closeEvent(event)

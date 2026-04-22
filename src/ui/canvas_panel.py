@@ -114,20 +114,8 @@ _PEN_AX_X = _cosmetic_pen(_AX_X_COLOR, 1.5)
 _PEN_AX_Y = _cosmetic_pen(_AX_Y_COLOR, 1.5)
 _PEN_AX_Z = _cosmetic_pen(_AX_Z_COLOR, 1.5)
 
-NAV_STYLE_CAD = "cad"
-NAV_STYLE_BLENDER = "blender"
-NAV_STYLE_GESTURE = "gesture"
-NAV_STYLE_MAYA_GESTURE = "maya_gesture"
-NAV_STYLE_OPEN_CASCADE = "open_cascade"
-NAV_STYLE_OPEN_INVENTOR = "open_inventor"
-NAV_STYLE_OPEN_SCAD = "open_scad"
-NAV_STYLE_REVIT = "revit"
-NAV_STYLE_SIEMENS_NX = "siemens_nx"
-NAV_STYLE_SOLIDWORKS = "solidworks"
-NAV_STYLE_TINKERCAD = "tinkercad"
-NAV_STYLE_TOUCHPAD = "touchpad"
-NAV_STYLE_LEGACY = "legacy"
-SUPPORTED_NAV_STYLES = (
+# Re-exported for backwards compatibility – canonical source is navigation_service
+from .navigation_service import (  # noqa: E402
     NAV_STYLE_CAD,
     NAV_STYLE_BLENDER,
     NAV_STYLE_GESTURE,
@@ -141,111 +129,10 @@ SUPPORTED_NAV_STYLES = (
     NAV_STYLE_TINKERCAD,
     NAV_STYLE_TOUCHPAD,
     NAV_STYLE_LEGACY,
+    SUPPORTED_NAV_STYLES,
+    get_navigation_action,
 )
 
-
-@dataclass(frozen=True)
-class _MouseBinding:
-    button: Qt.MouseButton
-    modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier
-
-
-_MOD_MASK = (
-    Qt.KeyboardModifier.ShiftModifier
-    | Qt.KeyboardModifier.ControlModifier
-    | Qt.KeyboardModifier.AltModifier
-)
-
-
-def _binding_matches(event: QMouseEvent, binding: _MouseBinding) -> bool:
-    if event.button() != binding.button:
-        return False
-    mods = event.modifiers() & _MOD_MASK
-    return mods == binding.modifiers
-
-
-_STYLE_BINDINGS: dict[str, dict[str, tuple[_MouseBinding, ...]]] = {
-    # FreeCAD CAD model (default)
-    NAV_STYLE_CAD: {
-        "rotate": (
-            _MouseBinding(Qt.MouseButton.MiddleButton),
-            _MouseBinding(Qt.MouseButton.RightButton, Qt.KeyboardModifier.ShiftModifier),
-        ),
-        "pan": (
-            _MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ShiftModifier),
-            _MouseBinding(Qt.MouseButton.RightButton, Qt.KeyboardModifier.ControlModifier),
-        ),
-    },
-    # Blender-like controls
-    NAV_STYLE_BLENDER: {
-        "rotate": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ShiftModifier),),
-    },
-    # Gesture style
-    NAV_STYLE_GESTURE: {
-        "rotate": (
-            _MouseBinding(Qt.MouseButton.RightButton),
-            _MouseBinding(Qt.MouseButton.LeftButton, Qt.KeyboardModifier.AltModifier),
-        ),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-    },
-    # MayaGesture style
-    NAV_STYLE_MAYA_GESTURE: {
-        "rotate": (_MouseBinding(Qt.MouseButton.LeftButton, Qt.KeyboardModifier.AltModifier),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.AltModifier),),
-    },
-    # OpenCascade style
-    NAV_STYLE_OPEN_CASCADE: {
-        "rotate": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ControlModifier),),
-    },
-    # OpenInventor style
-    NAV_STYLE_OPEN_INVENTOR: {
-        "rotate": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ShiftModifier),),
-    },
-    # OpenSCAD style
-    NAV_STYLE_OPEN_SCAD: {
-        "rotate": (
-            _MouseBinding(Qt.MouseButton.RightButton),
-            _MouseBinding(Qt.MouseButton.RightButton, Qt.KeyboardModifier.ControlModifier),
-        ),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-    },
-    # Revit style
-    NAV_STYLE_REVIT: {
-        "rotate": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ShiftModifier),),
-    },
-    # Siemens NX style
-    NAV_STYLE_SIEMENS_NX: {
-        "rotate": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-        "pan": (
-            _MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ControlModifier),
-            _MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ShiftModifier),
-        ),
-    },
-    # SolidWorks style
-    NAV_STYLE_SOLIDWORKS: {
-        "rotate": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.ControlModifier),),
-    },
-    # TinkerCAD style
-    NAV_STYLE_TINKERCAD: {
-        "rotate": (_MouseBinding(Qt.MouseButton.RightButton),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-    },
-    # Touchpad fallback mapping for mouse usage.
-    NAV_STYLE_TOUCHPAD: {
-        "rotate": (_MouseBinding(Qt.MouseButton.LeftButton, Qt.KeyboardModifier.AltModifier),),
-        "pan": (_MouseBinding(Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier),),
-    },
-    # Backward-compatibility with previous behavior
-    NAV_STYLE_LEGACY: {
-        "rotate": (_MouseBinding(Qt.MouseButton.RightButton, Qt.KeyboardModifier.ControlModifier),),
-        "pan": (_MouseBinding(Qt.MouseButton.MiddleButton),),
-    },
-}
 
 
 # ---------------------------------------------------------------------------
@@ -522,9 +409,9 @@ class _IsometricViewport(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus()
 
-        style_bindings = _STYLE_BINDINGS.get(self._nav_style, _STYLE_BINDINGS[NAV_STYLE_CAD])
-        start_rotate = any(_binding_matches(event, b) for b in style_bindings["rotate"])
-        start_pan = any(_binding_matches(event, b) for b in style_bindings["pan"])
+        _nav_action = get_navigation_action(self._nav_style, event.button(), event.modifiers())
+        start_rotate = _nav_action == "rotate"
+        start_pan = _nav_action == "pan"
 
         if start_rotate:
             self._rot_drag_start = event.position()
