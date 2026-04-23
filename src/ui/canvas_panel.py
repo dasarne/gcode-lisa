@@ -1233,16 +1233,22 @@ class CanvasPanel(QWidget):
         self._dims_label.hide()
         layout.addWidget(self._dims_label, stretch=0)
         
-        # Initial positioning of the view cube overlay
-        self._update_view_cube_position()
+        self._cube_positioned = False
 
     def _update_view_cube_position(self) -> None:
         """Position the view cube overlay in the top-right corner of the viewport."""
-        if self._viewport.isVisible():
+        if self._viewport.width() > 0 and self._viewport.height() > 0:
             margin = 8
             x = self._viewport.width() - self._view_cube.width() - margin
             y = margin
             self._view_cube.move(x, y)
+
+    def showEvent(self, event) -> None:
+        """Position view cube on first show (after layout has been calculated)."""
+        super().showEvent(event)
+        if not self._cube_positioned:
+            self._update_view_cube_position()
+            self._cube_positioned = True
 
     def resizeEvent(self, event) -> None:
         """Update view cube position when canvas panel is resized."""
