@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from src.gcode.detection import detect_dialect
 
 
@@ -70,13 +68,11 @@ M5
 
 def test_detect_real_fixture_files():
     root = Path(__file__).resolve().parents[1]
-    fixture_dir = root / "Test-Files"
-    if not fixture_dir.exists():
-        pytest.skip("Local Test-Files fixture directory is not available in this environment")
+    fixture_dir = root / "tests" / "fixtures" / "dialects"
 
-    grbl = (fixture_dir / "GRBL-Test.nc").read_text(encoding="utf-8")
-    linuxcnc = (fixture_dir / "LinuxCNC-Test.nc").read_text(encoding="utf-8")
-    marlin = (fixture_dir / "Marlin-Test.gcode").read_text(encoding="utf-8")
+    grbl = (fixture_dir / "grbl_freecad.nc").read_text(encoding="utf-8")
+    linuxcnc = (fixture_dir / "linuxcnc_freecad.nc").read_text(encoding="utf-8")
+    marlin = (fixture_dir / "marlin_prusaslicer.gcode").read_text(encoding="utf-8")
 
     assert detect_dialect(grbl).dialect == "grbl"
     assert detect_dialect(linuxcnc).dialect == "linuxcnc"
