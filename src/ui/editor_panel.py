@@ -1,7 +1,7 @@
 """G-Code editor panel."""
 
 import re
-from PyQt6.QtWidgets import QVBoxLayout, QWidget, QTextEdit
+from PyQt6.QtWidgets import QVBoxLayout, QWidget, QTextEdit, QToolTip
 from PyQt6.QtCore import pyqtSignal, QEvent, Qt
 from PyQt6.QtGui import (
     QTextCharFormat,
@@ -19,6 +19,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import QRegularExpression
 
 from ..analyzer.analyzer import AnalysisWarning, WarningSeverity
+from ..gcode.commands import ALL_COMMANDS
 from .search_service import (
     compute_match_ranges,
     find_next_match,
@@ -37,6 +38,22 @@ _CURRENT_LINE_COLOR = "#D9E8FF"
 _MULTI_LINE_SELECTION_COLOR = "#FFE3B8"
 _SEARCH_SCOPE_COLOR = "#FFF4BF"
 _SEARCH_MATCH_COLOR = "#CCF5CC"
+
+_CMD_TOKEN_RE = re.compile(r"\b([GMT]\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_PARAM_TOKEN_RE = re.compile(r"\b([A-Z])([-+]?\d*\.?\d+)\b", re.IGNORECASE)
+_PAREN_COMMENT_RE = re.compile(r"\([^)]*\)")
+
+_PARAM_EXPLANATIONS: dict[str, str] = {
+    "X": "X-Koordinate",
+    "Y": "Y-Koordinate",
+    "Z": "Z-Koordinate",
+    "A": "A-Achse (Mehrachsensystem)",
+    "B": "B-Achse (Mehrachsensystem)",
+    "C": "C-Achse (Mehrachsensystem)",
+    "I": "Relativer Kreismittelpunkt I (X-Anteil)",
+    "J": "Relativer Kreismittelpunkt J (Y-Anteil)",
+    "F": "Vorschub",
+}
 
 
 class _GCodeSyntaxHighlighter(QSyntaxHighlighter):
@@ -124,6 +141,7 @@ class EditorPanel(QWidget):
         super().__init__(parent)
         self._selected_line: int | None = None
         self._warning_severity: dict[int, WarningSeverity] = {}
+        self._line_warnings: dict[int, list[AnalysisWarning]] = {}
         self._search_scope: tuple[int, int] | None = None
         self._search_matches: list[tuple[int, int]] = []
         self._multi_selected_lines: set[int] = set()
@@ -151,6 +169,7 @@ class EditorPanel(QWidget):
         palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, hl_color)
         palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText, QColor("#000000"))
         self._text_edit.setPalette(palette)
+        self._text_edit.viewport().setMouseTracking(True)
 
         self._text_edit.installEventFilter(self)
         self._text_edit.viewport().installEventFilter(self)
@@ -160,6 +179,18 @@ class EditorPanel(QWidget):
 
     def eventFilter(self, obj, event) -> bool:
         """Handle keyboard and mouse events for multi-line canvas selection."""
+        if (
+            obj is self._text_edit.viewport()
+            and event.type() == QEvent.Type.MouseMove
+            and isinstance(event, QMouseEvent)
+        ):
+            self._update_hover_tooltip(event)
+            return False
+
+        if obj is self._text_edit.viewport() and event.type() == QEvent.Type.Leave:
+            QToolTip.hideText()
+            return False
+
         # Ctrl+Click on the text area toggles the clicked line in the multi-selection.
         if (
             obj is self._text_edit.viewport()
@@ -219,6 +250,7 @@ class EditorPanel(QWidget):
         self._text_edit.setPlainText(content)
         self._text_edit.document().setModified(False)
         self._warning_severity.clear()
+        self._line_warnings.clear()
         self._search_scope = None
         self._search_matches = []
         self._multi_selected_lines.clear()
@@ -316,14 +348,115 @@ class EditorPanel(QWidget):
     def mark_warning_lines(self, warnings: list[AnalysisWarning]) -> None:
         """Apply warning highlights as non-destructive extra selections."""
         line_severity: dict[int, WarningSeverity] = {}
+        line_warnings: dict[int, list[AnalysisWarning]] = {}
         for w in warnings:
             if w.line_number is None:
                 continue
+            line_warnings.setdefault(w.line_number, []).append(w)
             existing = line_severity.get(w.line_number)
             if existing is None or w.severity.value > existing.value:
                 line_severity[w.line_number] = w.severity
         self._warning_severity = line_severity
+        self._line_warnings = line_warnings
         self._apply_extra_selections()
+
+    def _update_hover_tooltip(self, event: QMouseEvent) -> None:
+        """Show a context tooltip for the token under the mouse cursor."""
+        cursor = self._text_edit.cursorForPosition(event.position().toPoint())
+        block = cursor.block()
+        if not block.isValid():
+            QToolTip.hideText()
+            return
+
+        line_text = block.text()
+        line_number = block.blockNumber() + 1
+        column = cursor.positionInBlock()
+
+        token_text = self._describe_token_at(line_text, column)
+        warning_text = self._describe_line_warnings(line_number)
+
+        if token_text and warning_text:
+            tooltip = f"{token_text}\n\n{warning_text}"
+        elif token_text:
+            tooltip = token_text
+        elif warning_text:
+            tooltip = warning_text
+        else:
+            QToolTip.hideText()
+            return
+
+        QToolTip.showText(event.globalPosition().toPoint(), tooltip, self._text_edit.viewport())
+
+    def _describe_token_at(self, line_text: str, column: int) -> str | None:
+        """Return a short explanation for the token located at the given column."""
+        if not line_text:
+            return None
+
+        semicolon_idx = line_text.find(";")
+        if semicolon_idx >= 0 and column >= semicolon_idx:
+            comment = line_text[semicolon_idx + 1:].strip()
+            comment_text = comment if comment else "(leer)"
+            return f"Kommentar: {comment_text}"
+
+        for match in _PAREN_COMMENT_RE.finditer(line_text):
+            start, end = match.span()
+            if start <= column < end:
+                comment = match.group(0)[1:-1].strip()
+                comment_text = comment if comment else "(leer)"
+                return f"Kommentar: {comment_text}"
+
+        for match in _CMD_TOKEN_RE.finditer(line_text):
+            start, end = match.span(1)
+            if start <= column < end:
+                command = match.group(1).upper()
+                description = ALL_COMMANDS.get(command)
+                if description:
+                    return f"Befehl {command}: {description}"
+                return f"Befehl {command}"
+
+        for match in _PARAM_TOKEN_RE.finditer(line_text):
+            start, end = match.span(0)
+            if start <= column < end:
+                key = match.group(1).upper()
+                raw_value = match.group(2)
+                return self._format_parameter_tooltip(key, raw_value)
+
+        return None
+
+    def _format_parameter_tooltip(self, key: str, raw_value: str) -> str:
+        """Format tooltip text for a parameter token."""
+        description = _PARAM_EXPLANATIONS.get(key, f"{key}-Parameter")
+        try:
+            value = float(raw_value)
+        except ValueError:
+            value_text = raw_value
+        else:
+            if key == "F":
+                value_text = f"{value:.2f} Einheit/min"
+            elif key in {"X", "Y", "Z", "I", "J", "A", "B", "C"}:
+                value_text = f"{value:.3f}"
+            else:
+                value_text = f"{value:g}"
+        return f"{description}: {value_text}"
+
+    def _describe_line_warnings(self, line_number: int) -> str | None:
+        """Return analyzer warning/error context for a given line, if available."""
+        warnings = self._line_warnings.get(line_number)
+        if not warnings:
+            return None
+
+        parts: list[str] = ["Analysehinweise:"]
+        for warning in warnings[:3]:
+            parts.append(f"- {warning.severity.name}: {warning.message}")
+            if warning.severity == WarningSeverity.ERROR:
+                parts.append(f"  Grund: {warning.message}")
+            if warning.suggestion:
+                parts.append(f"  Vorschlag: {warning.suggestion}")
+
+        if len(warnings) > 3:
+            parts.append(f"- ... {len(warnings) - 3} weitere Hinweise")
+
+        return "\n".join(parts)
 
     def copy(self) -> None:
         if self._multi_selected_lines and not self._text_edit.textCursor().hasSelection():
