@@ -49,6 +49,15 @@ STRINGS: dict[str, str] = {
     "status.search_matches": "{count} match(es)",
     "status.search_not_found": "Not found: {term}",
     "status.new_instance_failed": "Could not launch a new instance.",
+    "status.dialect_detected": "Detected dialect: {dialect} ({confidence}%)",
+
+    # -----------------------------------------------------------------------
+    # Dialect labels
+    # -----------------------------------------------------------------------
+    "dialect.grbl": "GRBL",
+    "dialect.linuxcnc": "LinuxCNC",
+    "dialect.marlin": "Marlin",
+    "dialect.unknown": "Unknown",
 
     # -----------------------------------------------------------------------
     # Edit menu

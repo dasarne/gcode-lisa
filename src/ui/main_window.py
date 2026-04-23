@@ -24,6 +24,7 @@ from .find_replace_dialog import FindReplaceDialog
 from .navigation_service import NAV_STYLE_CAD
 from ..gcode.grbl_versions import DEFAULT_VERSION
 from ..gcode.parser import GCodeParser
+from ..gcode.detection import DetectionResult, detect_dialect
 from ..analyzer.analyzer import GCodeAnalyzer, WarningSeverity
 from ..geometry.path import build_toolpath
 
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self._issues_total = 0
         self._issues_errors = 0
         self._issues_warnings = 0
+        self._detected_dialect: DetectionResult | None = None
 
         self._setup_ui()
         self._setup_menu()
@@ -319,6 +321,7 @@ class MainWindow(QMainWindow):
     def _load_content(self, content: str, label: str = "", reparse: bool = False) -> None:
         """Parse content, run analysis, and update all UI panels."""
         self._loaded_content = content
+        self._detected_dialect = detect_dialect(content)
         if not reparse:
             self._editor_panel.load_content(content)
 
@@ -355,6 +358,13 @@ class MainWindow(QMainWindow):
         parts: list[str] = []
         if label and not self._is_dirty:
             parts.append(self._tr("status.loaded").format(path=label))
+        if self._detected_dialect and self._detected_dialect.dialect != "unknown":
+            parts.append(
+                self._tr("status.dialect_detected").format(
+                    dialect=self._tr(f"dialect.{self._detected_dialect.dialect}"),
+                    confidence=round(self._detected_dialect.confidence * 100),
+                )
+            )
         if not issue_count:
             parts.append(self._tr("status.no_issues"))
 
