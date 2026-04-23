@@ -18,24 +18,21 @@ from PyQt6.QtWidgets import (
 from ..analyzer.analyzer import AnalysisWarning, WarningSeverity
 
 
-def _create_severity_icon(severity: WarningSeverity) -> QIcon:
-    """Create a colored square icon for severity level."""
+_SEVERITY_ICON: dict[WarningSeverity, QIcon] = {}
+
+
+def _create_severity_icons() -> None:
+    """Create colored square icons for severity levels (called after QApplication init)."""
     color_map = {
         WarningSeverity.ERROR: "#FF6B6B",
         WarningSeverity.WARNING: "#FFB800",
         WarningSeverity.INFO: "#4A9EFF",
     }
     
-    pixmap = QPixmap(16, 16)
-    pixmap.fill(QColor(color_map[severity]))
-    return QIcon(pixmap)
-
-
-_SEVERITY_ICON: dict[WarningSeverity, QIcon] = {
-    WarningSeverity.ERROR: _create_severity_icon(WarningSeverity.ERROR),
-    WarningSeverity.WARNING: _create_severity_icon(WarningSeverity.WARNING),
-    WarningSeverity.INFO: _create_severity_icon(WarningSeverity.INFO),
-}
+    for severity, color in color_map.items():
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(QColor(color))
+        _SEVERITY_ICON[severity] = QIcon(pixmap)
 
 _SEVERITY_LABEL: dict[WarningSeverity, str] = {
     WarningSeverity.ERROR: "Error",
@@ -51,6 +48,7 @@ class WarningsDialog(QDialog):
 
     def __init__(self, parent=None, language: str = "de") -> None:
         super().__init__(parent)
+        _create_severity_icons()  # Initialize icons after QApplication is created
         self._language = language
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self.setModal(False)
