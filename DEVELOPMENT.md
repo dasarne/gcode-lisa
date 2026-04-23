@@ -63,19 +63,43 @@ Undo integration:
 
 - **PEP 8** compliance is required for all Python files
 - **black** is used for auto-formatting with a line length of 100
-- **flake8** is used for linting with `--max-line-length=100 --extend-ignore=E203`
+- **flake8** CI gate focuses on high-signal runtime errors (`E9,F63,F7,F82`)
+- A stricter local flake8 run can still be used for style cleanup
 - **mypy** is used for static type checking
 
 ```bash
 # Format code
 black src/ tests/ --line-length=100
 
-# Lint
+# Lint (CI-equivalent gate)
+flake8 src/ tests/ --select=E9,F63,F7,F82 --show-source --statistics
+
+# Optional stricter lint (style-oriented)
 flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203
 
 # Type check
 mypy src/
 ```
+
+## CI Monitoring (GitHub Actions)
+
+Use GitHub CLI to inspect current and recent runs:
+
+```bash
+# Latest runs
+gh run list --limit 20
+
+# Follow the latest run interactively
+gh run watch
+
+# Inspect failed steps/logs of one run
+gh run view <RUN_ID> --log-failed
+
+# Structured output (script-friendly)
+gh run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion
+```
+
+Tip: CI emails can lag behind local state. Always verify the latest run list before debugging.
 
 ## Agent/Skill-Based Development
 
