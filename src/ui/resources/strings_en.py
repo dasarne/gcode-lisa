@@ -97,6 +97,8 @@ STRINGS: dict[str, str] = {
     "find.replace_next": "Replace Next",
     "find.replace_all": "Replace All",
     "find.in_selection": "In Selection",
+    "find.find_placeholder": "Search term or regex pattern...",
+    "find.replace_placeholder": "Replacement text...",
     "find.status.empty_search": "Empty search term",
     "find.status.regex_error": "Regex error: {error}",
 

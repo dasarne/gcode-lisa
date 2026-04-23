@@ -46,7 +46,7 @@ class FindReplaceDialog(QDialog):
         self._find_label = QLabel("")
         self._find_input = QLineEdit()
         self._find_input.textChanged.connect(self._on_find_text_changed)
-        self._find_input.setPlaceholderText("Search term or regex pattern...")
+        self._find_input.returnPressed.connect(self._on_find_next)
         find_layout.addWidget(self._find_label)
         find_layout.addWidget(self._find_input)
         layout.addLayout(find_layout)
@@ -78,7 +78,7 @@ class FindReplaceDialog(QDialog):
         replace_layout = QHBoxLayout()
         self._replace_label = QLabel("")
         self._replace_input = QLineEdit()
-        self._replace_input.setPlaceholderText("Replacement text...")
+        self._replace_input.returnPressed.connect(self._on_replace_next)
         replace_layout.addWidget(self._replace_label)
         replace_layout.addWidget(self._replace_input)
         layout.addLayout(replace_layout)
@@ -123,6 +123,8 @@ class FindReplaceDialog(QDialog):
         self._replace_next_btn.setText(strings["replace_next"])
         self._replace_all_btn.setText(strings["replace_all"])
         self._selection_check.setText(strings["in_selection"])
+        self._find_input.setPlaceholderText(strings["find_placeholder"])
+        self._replace_input.setPlaceholderText(strings["replace_placeholder"])
 
     def set_language(self, language: str) -> None:
         """Update dialog language."""
@@ -143,17 +145,27 @@ class FindReplaceDialog(QDialog):
             "replace_next": s["find.replace_next"],
             "replace_all": s["find.replace_all"],
             "in_selection": s["find.in_selection"],
+            "find_placeholder": s["find.find_placeholder"],
+            "replace_placeholder": s["find.replace_placeholder"],
             "status.empty_search": s["find.status.empty_search"],
             "status.regex_error": s["find.status.regex_error"],
         }
 
-    def _on_find_text_changed(self) -> None:
-        """Clear status when find text changes."""
+    def _emit_search_preview(self) -> None:
+        """Emit preview updates and surface regex errors immediately while typing."""
         self._status_label.setText("")
         term = self._find_input.text()
         use_regex = self._regex_check.isChecked()
         search_in_selection = self._selection_check.isChecked()
+        if use_regex and term and not self._validate_regex(term):
+            # Clear highlights when the regex is invalid to avoid stale matches.
+            self.search_updated.emit("", False, search_in_selection)
+            return
         self.search_updated.emit(term, use_regex, search_in_selection)
+
+    def _on_find_text_changed(self) -> None:
+        """Refresh match preview when query/options change."""
+        self._emit_search_preview()
 
     def _on_find_next(self) -> None:
         term = self._find_input.text()
@@ -236,15 +248,11 @@ class FindReplaceDialog(QDialog):
             super().keyPressEvent(event)
 
     def showEvent(self, event) -> None:
-        """Clear stale status and refresh match highlights whenever the dialog becomes visible."""
+        """Refresh match highlights and focus find input whenever dialog becomes visible."""
         super().showEvent(event)
-        self._status_label.setText("")
-        # Re-emit search_updated so the editor immediately highlights matches
-        # (also handles the case where the dialog is re-shown after being closed).
-        term = self._find_input.text()
-        use_regex = self._regex_check.isChecked()
-        search_in_selection = self._selection_check.isChecked()
-        self.search_updated.emit(term, use_regex, search_in_selection)
+        self._find_input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        self._find_input.selectAll()
+        self._emit_search_preview()
 
     def closeEvent(self, event) -> None:
         self.dialog_closed.emit()
