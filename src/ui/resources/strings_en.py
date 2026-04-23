@@ -51,6 +51,8 @@ STRINGS: dict[str, str] = {
     "status.new_instance_failed": "Could not launch a new instance.",
     "status.dialect_detected": "Detected dialect: {dialect} ({confidence}%)",
     "status.profile_active": "Active profile: {profile}",
+    "status.profile_active_manual": "Active profile (manual): {profile}",
+    "status.profile_active_auto": "Active profile (auto): {profile}",
 
     # -----------------------------------------------------------------------
     # Dialect labels
@@ -145,8 +147,9 @@ STRINGS: dict[str, str] = {
     # Settings dialog
     # -----------------------------------------------------------------------
     "settings.title": "Settings",
+    "settings.profile": "Dialect profile:",
     "settings.version": "Dialect profile:",
-    "settings.auto_detect": "Auto-detect on file load:",
+    "settings.auto_detect": "Use detected profile on file load:",
     "settings.language": "Language:",
     "settings.mouse_navigation": "Mouse navigation:",
     "settings.mouse_navigation.cad": "CAD (FreeCAD)",

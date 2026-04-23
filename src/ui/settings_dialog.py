@@ -1,4 +1,4 @@
-"""Settings dialog for GRBL dialect and UI language."""
+"""Settings dialog for dialect profile and UI language."""
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -38,14 +38,21 @@ class SettingsDialog(QDialog):
     def __init__(
         self,
         parent=None,
-        current_version: str = DEFAULT_VERSION,
-        current_auto_detect_dialect: bool = False,
+        current_profile_id: str = DEFAULT_VERSION,
+        current_auto_apply_detected_profile: bool = False,
+        current_version: str | None = None,
+        current_auto_detect_dialect: bool | None = None,
         current_language: str = "de",
         current_mouse_nav_style: str = NAV_STYLE_CAD,
     ) -> None:
         super().__init__(parent)
-        self._current_version = current_version
-        self._current_auto_detect_dialect = current_auto_detect_dialect
+        if current_version is not None:
+            current_profile_id = current_version
+        if current_auto_detect_dialect is not None:
+            current_auto_apply_detected_profile = current_auto_detect_dialect
+
+        self._current_profile_id = current_profile_id
+        self._current_auto_apply_detected_profile = current_auto_apply_detected_profile
         self._current_language = current_language
         self._current_mouse_nav_style = current_mouse_nav_style
         self._profiles = list_profiles()
@@ -57,15 +64,15 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         self._form = QFormLayout()
 
-        self._version_combo = QComboBox()
+        self._profile_combo = QComboBox()
         for profile in self._profiles:
-            self._version_combo.addItem(profile.name, profile.profile_id)
-        idx = self._version_combo.findData(self._current_version)
-        self._version_combo.setCurrentIndex(max(0, idx))
-        self._version_combo.currentTextChanged.connect(self._on_version_changed)
+            self._profile_combo.addItem(profile.name, profile.profile_id)
+        idx = self._profile_combo.findData(self._current_profile_id)
+        self._profile_combo.setCurrentIndex(max(0, idx))
+        self._profile_combo.currentTextChanged.connect(self._on_profile_changed)
 
         self._auto_detect_checkbox = QCheckBox()
-        self._auto_detect_checkbox.setChecked(self._current_auto_detect_dialect)
+        self._auto_detect_checkbox.setChecked(self._current_auto_apply_detected_profile)
 
         self._language_combo = QComboBox()
         self._language_combo.addItem("Deutsch", "de")
@@ -91,11 +98,11 @@ class SettingsDialog(QDialog):
         idx = self._mouse_nav_combo.findData(self._current_mouse_nav_style)
         self._mouse_nav_combo.setCurrentIndex(max(0, idx))
 
-        self._version_label = QLabel("")
+        self._profile_label = QLabel("")
         self._auto_detect_label = QLabel("")
         self._language_label = QLabel("")
         self._mouse_nav_label = QLabel("")
-        self._form.addRow(self._version_label, self._version_combo)
+        self._form.addRow(self._profile_label, self._profile_combo)
         self._form.addRow(self._auto_detect_label, self._auto_detect_checkbox)
         self._form.addRow(self._language_label, self._language_combo)
         self._form.addRow(self._mouse_nav_label, self._mouse_nav_combo)
@@ -111,15 +118,23 @@ class SettingsDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
-        self._populate_feature_table(self._current_version)
+        self._populate_feature_table(self._current_profile_id)
+
+    def get_selected_profile_id(self) -> str:
+        """Return the profile id currently selected in the combo box."""
+        return self._profile_combo.currentData()
 
     def get_selected_version(self) -> str:
-        """Return the version currently selected in the combo box."""
-        return self._version_combo.currentData()
+        """Backward-compatible alias for profile selection."""
+        return self.get_selected_profile_id()
+
+    def get_auto_apply_detected_profile(self) -> bool:
+        """Return whether detected profile should be auto-applied on file load."""
+        return self._auto_detect_checkbox.isChecked()
 
     def get_auto_detect_dialect(self) -> bool:
-        """Return whether auto-detection should select profile on load."""
-        return self._auto_detect_checkbox.isChecked()
+        """Backward-compatible alias for auto-apply detected profile."""
+        return self.get_auto_apply_detected_profile()
 
     def get_selected_language(self) -> str:
         """Return selected UI language code ('de' or 'en')."""
@@ -129,13 +144,13 @@ class SettingsDialog(QDialog):
         """Return selected mouse navigation style id."""
         return self._mouse_nav_combo.currentData()
 
-    def _on_version_changed(self, version: str) -> None:
-        """Refresh the feature table when the user picks a different version."""
-        self._populate_feature_table(self.get_selected_version())
+    def _on_profile_changed(self, _profile_name: str) -> None:
+        """Refresh the feature table when the user picks a different profile."""
+        self._populate_feature_table(self.get_selected_profile_id())
 
-    def _populate_feature_table(self, version_id: str) -> None:
-        """Fill the feature table for the given GRBL version."""
-        profile = get_profile(version_id)
+    def _populate_feature_table(self, profile_id: str) -> None:
+        """Fill the feature table for the given dialect profile."""
+        profile = get_profile(profile_id)
         commands = sorted(profile.known_commands)
         self._feature_table.setRowCount(len(commands))
         for row, cmd in enumerate(commands):
@@ -147,7 +162,7 @@ class SettingsDialog(QDialog):
         lang = self._language_combo.currentData() or self._current_language
         s = get_strings(lang)
         self.setWindowTitle(s["settings.title"])
-        self._version_label.setText(s["settings.version"])
+        self._profile_label.setText(s["settings.profile"])
         self._auto_detect_label.setText(s["settings.auto_detect"])
         self._language_label.setText(s["settings.language"])
         self._mouse_nav_label.setText(s["settings.mouse_navigation"])

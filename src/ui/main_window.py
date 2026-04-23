@@ -269,16 +269,16 @@ class MainWindow(QMainWindow):
         """Open application settings dialog."""
         dialog = SettingsDialog(
             parent=self,
-            current_version=self._current_version,
-            current_auto_detect_dialect=self._auto_detect_profile,
+            current_profile_id=self._current_version,
+            current_auto_apply_detected_profile=self._auto_detect_profile,
             current_language=self._language,
             current_mouse_nav_style=self._mouse_nav_style,
         )
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
 
-        self._current_version = dialog.get_selected_version()
-        self._auto_detect_profile = dialog.get_auto_detect_dialect()
+        self._current_version = dialog.get_selected_profile_id()
+        self._auto_detect_profile = dialog.get_auto_apply_detected_profile()
         self._language = dialog.get_selected_language()
         self._mouse_nav_style = dialog.get_selected_mouse_nav_style()
         self._settings.setValue(self._DIALECT_PROFILE_KEY, self._current_version)
@@ -335,12 +335,14 @@ class MainWindow(QMainWindow):
         self._loaded_content = content
         self._detected_dialect = detect_dialect(content)
         analysis_profile_id = self._current_version
+        auto_applied_profile = False
         if (
             self._auto_detect_profile
             and self._detected_dialect
             and self._detected_dialect.profile_id
         ):
             analysis_profile_id = self._detected_dialect.profile_id
+            auto_applied_profile = True
         if not reparse:
             self._editor_panel.load_content(content)
 
@@ -386,9 +388,11 @@ class MainWindow(QMainWindow):
             )
         try:
             active_profile = get_profile(analysis_profile_id)
-            parts.append(self._tr("status.profile_active").format(profile=active_profile.name))
+            profile_label = active_profile.name
         except ValueError:
-            parts.append(self._tr("status.profile_active").format(profile=analysis_profile_id))
+            profile_label = analysis_profile_id
+        mode_key = "status.profile_active_auto" if auto_applied_profile else "status.profile_active_manual"
+        parts.append(self._tr(mode_key).format(profile=profile_label))
         if not issue_count:
             parts.append(self._tr("status.no_issues"))
 
@@ -401,9 +405,13 @@ class MainWindow(QMainWindow):
         self._set_dirty(True)
         self._load_content(content, label=self._loaded_path or self._tr("title.untitled"), reparse=True)
 
+    def _on_profile_changed(self, profile_id: str) -> None:
+        """Re-run analysis when the profile selector changes."""
+        self._current_version = profile_id
+
     def _on_version_changed(self, version_id: str) -> None:
-        """Re-run analysis when the GRBL version selector changes."""
-        self._current_version = version_id
+        """Backward-compatible alias for profile change handler."""
+        self._on_profile_changed(version_id)
 
     def _on_editor_line_selected(self, line_number: int) -> None:
         """Kept for compatibility – canvas routing now via lines_selected."""
