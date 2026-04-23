@@ -62,6 +62,21 @@ def test_parse_line_m_command():
     assert line.command == "M3"
 
 
+def test_parse_line_preserves_all_commands_in_order():
+    parser = GCodeParser("1.1H")
+    line = parser.parse_line("G90 G21 G0 X0 Y0", 1)
+    assert line.command == "G90"
+    assert line.commands == ["G90", "G21", "G0"]
+
+
+def test_parse_line_preserves_word_sequence_metadata():
+    parser = GCodeParser("1.1H")
+    line = parser.parse_line("G1 X10.5 Y-3.2 F500", 7)
+    assert [w.raw for w in line.words] == ["G1", "X10.5", "Y-3.2", "F500"]
+    assert [w.letter for w in line.words] == ["G", "X", "Y", "F"]
+    assert [w.normalized for w in line.words] == ["G1", "X10.5", "Y-3.2", "F500"]
+
+
 # ---------------------------------------------------------------------------
 # parse_line: parameter extraction
 # ---------------------------------------------------------------------------

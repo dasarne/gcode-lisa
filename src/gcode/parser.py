@@ -12,11 +12,30 @@ _WORD_RE = re.compile(r'([A-Za-z])([+-]?\d+(?:\.\d+)?)')
 
 
 @dataclass
+class GCodeWord:
+    """Represents a single letter-number word from a G-Code block."""
+
+    letter: str
+    value: float
+    raw: str
+    position: int
+
+    @property
+    def normalized(self) -> str:
+        """Return a canonical representation like G1 or G38.2."""
+        if self.value == int(self.value):
+            return f"{self.letter}{int(self.value)}"
+        return f"{self.letter}{self.value}"
+
+
+@dataclass
 class GCodeLine:
     """Represents a single parsed G-Code line."""
 
     line_number: int
     raw_line: str
+    words: list[GCodeWord] = field(default_factory=list)
+    commands: list[str] = field(default_factory=list)
     command: str | None = None
     parameters: dict[str, float] = field(default_factory=dict)
     comment: str | None = None
@@ -85,25 +104,35 @@ class GCodeParser:
         working = working.strip().upper()
 
         command: str | None = None
+        commands: list[str] = []
+        words: list[GCodeWord] = []
         parameters: dict[str, float] = {}
 
         for match in _WORD_RE.finditer(working):
             letter = match.group(1)
             num_val = float(match.group(2))
+            word = GCodeWord(
+                letter=letter,
+                value=num_val,
+                raw=match.group(0),
+                position=match.start(),
+            )
+            words.append(word)
 
             if letter in ('G', 'M'):
+                normalized = word.normalized
+                commands.append(normalized)
                 if command is None:
-                    # Normalise leading zeros: G01 → G1, but preserve decimals: G38.2 → G38.2
-                    if num_val == int(num_val):
-                        command = f"{letter}{int(num_val)}"
-                    else:
-                        command = f"{letter}{num_val}"
+                    # Backward-compatible primary command: first G/M in line.
+                    command = normalized
             else:
                 parameters[letter] = num_val
 
         return GCodeLine(
             line_number=line_number,
             raw_line=raw_line,
+            words=words,
+            commands=commands,
             command=command,
             parameters=parameters,
             comment=comment,
