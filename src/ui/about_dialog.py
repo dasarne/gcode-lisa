@@ -97,7 +97,7 @@ class AboutDialog(QDialog):
 
 		grid = QGridLayout()
 		info_rows = [
-			(t["label.version"], "0.1.0"),
+			(t["label.version"], "1.0.0"),
 			(t["label.python"], "3.10+"),
 			(t["label.qt"], "PyQt6"),
 			(t["label.license"], "GPL-3.0"),

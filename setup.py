@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="gcode-lisa",
-    version="0.1.0",
+    version="1.0.0",
     description="GCode Lisa - Cut with confidence. Waste less.",
     author="dasarne",
     python_requires=">=3.10",

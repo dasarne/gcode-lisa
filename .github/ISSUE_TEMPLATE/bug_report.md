@@ -27,4 +27,4 @@ If applicable, add screenshots.
 - OS: [e.g. Ubuntu 22.04 / KDE]
 - Python version: [e.g. 3.11]
 - GRBL version in use: [e.g. 1.1H]
-- GCode Lisa version: [e.g. 0.1.0]
+- GCode Lisa version: [e.g. 1.0.0]
