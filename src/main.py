@@ -14,6 +14,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("GCode Lisa")
     app.setApplicationVersion("0.1.0")
+    startup_path = sys.argv[1] if len(sys.argv) > 1 else None
 
     logo_path = Path(__file__).resolve().parents[1] / "assets" / "Lisa.svg"
     if logo_path.exists():
@@ -23,6 +24,8 @@ def main() -> None:
     window = MainWindow()
     if logo_path.exists():
         window.setWindowIcon(QIcon(str(logo_path)))
+    if startup_path:
+        window._open_file_path(startup_path)
     window.show()
 
     sys.exit(app.exec())

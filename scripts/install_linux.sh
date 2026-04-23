@@ -5,8 +5,10 @@ APP_ID="gcode-lisa"
 APP_NAME="GCode Lisa"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ICON_PATH="$ROOT_DIR/assets/Lisa.svg"
-DESKTOP_FILE="$ROOT_DIR/scripts/${APP_ID}.desktop"
-MIME_XML="$ROOT_DIR/scripts/${APP_ID}-mime.xml"
+DESKTOP_FILE="$(mktemp)"
+MIME_XML="$(mktemp)"
+
+trap 'rm -f "$DESKTOP_FILE" "$MIME_XML"' EXIT
 
 mkdir -p "$HOME/.local/share/applications"
 mkdir -p "$HOME/.local/share/mime/packages"
@@ -17,6 +19,7 @@ Type=Application
 Name=${APP_NAME}
 Comment=Cut with confidence. Waste less.
 Exec=${ROOT_DIR}/.venv/bin/python -m src.main %f
+Path=${ROOT_DIR}
 Icon=${ICON_PATH}
 Terminal=false
 Categories=Development;Graphics;
@@ -39,6 +42,6 @@ install -m 0644 "$MIME_XML" "$HOME/.local/share/mime/packages/${APP_ID}-mime.xml
 
 update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
 update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
-xdg-mime default "${APP_ID}.desktop" text/x-gcode-lisa || true
+xdg-mime default "${APP_ID}.desktop" text/x-gcode-lisa 2>/dev/null || true
 
 echo "Installed ${APP_NAME} launcher and file associations for *.gcode and *.nc"
