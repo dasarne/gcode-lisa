@@ -50,9 +50,11 @@ STRINGS: dict[str, str] = {
     "status.search_not_found": "Nicht gefunden: {term}",
     "status.new_instance_failed": "Neue Instanz konnte nicht gestartet werden.",
     "status.dialect_detected": "Erkannter Dialekt: {dialect} ({confidence}%)",
-    "status.profile_active": "Aktives Profil: {profile}",
+    "status.profile_active": "Aktives Profil:",
     "status.profile_active_manual": "Aktives Profil (manuell): {profile}",
     "status.profile_active_auto": "Aktives Profil (automatisch): {profile}",
+    "status.profile_auto_option": "Auto",
+    "status.profile_auto_tooltip": "Auto aktiv: erkanntes Profil = {profile}",
 
     # -----------------------------------------------------------------------
     # Dialekt-Bezeichnungen

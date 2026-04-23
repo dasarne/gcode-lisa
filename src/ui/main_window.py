@@ -8,6 +8,8 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMainWindow,
     QMessageBox,
+    QLabel,
+    QComboBox,
     QSplitter,
     QToolButton,
 )
@@ -23,7 +25,7 @@ from .about_dialog import AboutDialog
 from .find_replace_dialog import FindReplaceDialog
 from .navigation_service import NAV_STYLE_CAD
 from ..gcode.grbl_versions import DEFAULT_VERSION
-from ..gcode.dialects import get_profile
+from ..gcode.dialects import get_profile, list_profiles
 from ..gcode.parser import GCodeParser
 from ..gcode.detection import DetectionResult, detect_dialect
 from ..analyzer.analyzer import GCodeAnalyzer, WarningSeverity
@@ -35,6 +37,7 @@ class MainWindow(QMainWindow):
 
     _DIALECT_PROFILE_KEY = "dialect/profile"
     _LEGACY_GRBL_VERSION_KEY = "grbl/version"
+    _AUTO_PROFILE_ID = "__auto__"
 
     def __init__(self) -> None:
         super().__init__()
@@ -67,6 +70,10 @@ class MainWindow(QMainWindow):
         self._issues_errors = 0
         self._issues_warnings = 0
         self._detected_dialect: DetectionResult | None = None
+        self._effective_profile_id: str = self._current_version
+        self._status_profile_label: QLabel | None = None
+        self._status_profile_combo: QComboBox | None = None
+        self._syncing_profile_combo = False
 
         self._setup_ui()
         self._setup_menu()
@@ -179,6 +186,13 @@ class MainWindow(QMainWindow):
 
     def _setup_statusbar(self) -> None:
         """Initialise the status bar."""
+        self._status_profile_label = QLabel(self)
+        self._status_profile_combo = QComboBox(self)
+        self._status_profile_combo.currentIndexChanged.connect(self._on_status_profile_selection_changed)
+        self._refresh_status_profile_combo()
+        self.statusBar().addPermanentWidget(self._status_profile_label)
+        self.statusBar().addPermanentWidget(self._status_profile_combo)
+
         self._issues_button = QToolButton(self)
         self._issues_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._issues_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -290,6 +304,8 @@ class MainWindow(QMainWindow):
         if self._find_replace_dialog is not None:
             self._find_replace_dialog.set_language(self._language)
 
+        self._refresh_status_profile_combo()
+
         if self._loaded_content:
             self._load_content(
                 self._loaded_content,
@@ -334,15 +350,8 @@ class MainWindow(QMainWindow):
         """Parse content, run analysis, and update all UI panels."""
         self._loaded_content = content
         self._detected_dialect = detect_dialect(content)
-        analysis_profile_id = self._current_version
-        auto_applied_profile = False
-        if (
-            self._auto_detect_profile
-            and self._detected_dialect
-            and self._detected_dialect.profile_id
-        ):
-            analysis_profile_id = self._detected_dialect.profile_id
-            auto_applied_profile = True
+        analysis_profile_id, auto_applied_profile = self._resolve_analysis_profile_id()
+        self._effective_profile_id = analysis_profile_id
         if not reparse:
             self._editor_panel.load_content(content)
 
@@ -377,8 +386,6 @@ class MainWindow(QMainWindow):
         self._update_issues_button(message_count, error_count, warning_count)
 
         parts: list[str] = []
-        if label and not self._is_dirty:
-            parts.append(self._tr("status.loaded").format(path=label))
         if self._detected_dialect and self._detected_dialect.dialect != "unknown":
             parts.append(
                 self._tr("status.dialect_detected").format(
@@ -386,17 +393,11 @@ class MainWindow(QMainWindow):
                     confidence=round(self._detected_dialect.confidence * 100),
                 )
             )
-        try:
-            active_profile = get_profile(analysis_profile_id)
-            profile_label = active_profile.name
-        except ValueError:
-            profile_label = analysis_profile_id
-        mode_key = "status.profile_active_auto" if auto_applied_profile else "status.profile_active_manual"
-        parts.append(self._tr(mode_key).format(profile=profile_label))
         if not issue_count:
             parts.append(self._tr("status.no_issues"))
 
         self.statusBar().showMessage("  |  ".join(parts))
+        self._refresh_status_profile_combo()
         self._canvas_panel.set_language(self._language)
         self._comment_panel.set_language(self._language)
 
@@ -408,6 +409,73 @@ class MainWindow(QMainWindow):
     def _on_profile_changed(self, profile_id: str) -> None:
         """Re-run analysis when the profile selector changes."""
         self._current_version = profile_id
+
+    def _resolve_analysis_profile_id(self) -> tuple[str, bool]:
+        """Return active profile id and whether auto mode applied it."""
+        if (
+            self._auto_detect_profile
+            and self._detected_dialect is not None
+            and self._detected_dialect.profile_id is not None
+        ):
+            return self._detected_dialect.profile_id, True
+        return self._current_version, False
+
+    def _refresh_status_profile_combo(self) -> None:
+        """Populate and sync the profile selector in the status bar."""
+        if self._status_profile_combo is None or self._status_profile_label is None:
+            return
+
+        active_profile_id, auto_applied = self._resolve_analysis_profile_id()
+        self._effective_profile_id = active_profile_id
+
+        self._syncing_profile_combo = True
+        try:
+            self._status_profile_label.setText(self._tr("status.profile_active"))
+            self._status_profile_combo.clear()
+            self._status_profile_combo.addItem(self._tr("status.profile_auto_option"), self._AUTO_PROFILE_ID)
+            for profile in list_profiles():
+                self._status_profile_combo.addItem(profile.name, profile.profile_id)
+
+            selected_data = self._AUTO_PROFILE_ID if self._auto_detect_profile else self._current_version
+            index = self._status_profile_combo.findData(selected_data)
+            if index < 0:
+                index = self._status_profile_combo.findData(self._AUTO_PROFILE_ID)
+            self._status_profile_combo.setCurrentIndex(index)
+
+            if auto_applied:
+                try:
+                    detected_name = get_profile(active_profile_id).name
+                except ValueError:
+                    detected_name = active_profile_id
+                self._status_profile_combo.setToolTip(
+                    self._tr("status.profile_auto_tooltip").format(profile=detected_name)
+                )
+            else:
+                self._status_profile_combo.setToolTip("")
+        finally:
+            self._syncing_profile_combo = False
+
+    def _on_status_profile_selection_changed(self, _index: int) -> None:
+        """Handle direct profile selection from status bar combobox."""
+        if self._syncing_profile_combo or self._status_profile_combo is None:
+            return
+
+        selected = self._status_profile_combo.currentData()
+        if selected == self._AUTO_PROFILE_ID:
+            self._auto_detect_profile = True
+            self._settings.setValue("dialect/auto_detect", True)
+        else:
+            self._auto_detect_profile = False
+            self._current_version = str(selected)
+            self._settings.setValue("dialect/auto_detect", False)
+            self._settings.setValue(self._DIALECT_PROFILE_KEY, self._current_version)
+
+        if self._loaded_content:
+            self._load_content(
+                self._loaded_content,
+                label=self._loaded_path or "",
+                reparse=True,
+            )
 
     def _on_version_changed(self, version_id: str) -> None:
         """Backward-compatible alias for profile change handler."""
@@ -553,6 +621,7 @@ class MainWindow(QMainWindow):
         self._replace_action.setText(self._tr("edit.replace"))
         self._messages_action.setText(self._tr("edit.messages"))
         self._update_issues_button(self._issues_total, self._issues_errors, self._issues_warnings)
+        self._refresh_status_profile_combo()
         self._update_window_title()
         self._canvas_panel.set_language(self._language)
         self._comment_panel.set_language(self._language)
