@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QComboBox,
     QSplitter,
-    QToolButton,
 )
 from PyQt6.QtCore import Qt, QSettings, QProcess
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
@@ -69,10 +68,13 @@ class MainWindow(QMainWindow):
         self._issues_total = 0
         self._issues_errors = 0
         self._issues_warnings = 0
+        self._issues_infos = 0
         self._detected_dialect: DetectionResult | None = None
         self._effective_profile_id: str = self._current_version
+        self._status_dialect_label: QLabel | None = None
         self._status_profile_label: QLabel | None = None
         self._status_profile_combo: QComboBox | None = None
+        self._issues_button: QLabel | None = None
         self._syncing_profile_combo = False
 
         self._setup_ui()
@@ -186,20 +188,24 @@ class MainWindow(QMainWindow):
 
     def _setup_statusbar(self) -> None:
         """Initialise the status bar."""
+        self._issues_button = QLabel(self)
+        self._issues_button.setTextFormat(Qt.TextFormat.RichText)
+        self._issues_button.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self._issues_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._issues_button.setToolTip(self._tr("status.issues_tooltip"))
+        self._issues_button.linkActivated.connect(lambda _href: self._canvas_panel.show_warning_dialog())
+        self._issues_button.hide()
+        self.statusBar().addPermanentWidget(self._issues_button)
+
+        self._status_dialect_label = QLabel(self)
+        self.statusBar().addPermanentWidget(self._status_dialect_label)
+
         self._status_profile_label = QLabel(self)
         self._status_profile_combo = QComboBox(self)
         self._status_profile_combo.currentIndexChanged.connect(self._on_status_profile_selection_changed)
         self._refresh_status_profile_combo()
         self.statusBar().addPermanentWidget(self._status_profile_label)
         self.statusBar().addPermanentWidget(self._status_profile_combo)
-
-        self._issues_button = QToolButton(self)
-        self._issues_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self._issues_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._issues_button.setToolTip(self._tr("status.issues_tooltip"))
-        self._issues_button.clicked.connect(self._canvas_panel.show_warning_dialog)
-        self._issues_button.hide()
-        self.statusBar().addPermanentWidget(self._issues_button)
         self.statusBar().showMessage(self._tr("status.ready"))
 
     def _connect_signals(self) -> None:
@@ -381,22 +387,13 @@ class MainWindow(QMainWindow):
 
         error_count = sum(1 for w in warnings if w.severity == WarningSeverity.ERROR)
         warning_count = sum(1 for w in warnings if w.severity == WarningSeverity.WARNING)
-        issue_count = error_count + warning_count
+        info_count = sum(1 for w in warnings if w.severity == WarningSeverity.INFO)
+        issue_count = error_count + warning_count + info_count
         message_count = len(warnings)
-        self._update_issues_button(message_count, error_count, warning_count)
+        self._update_issues_button(message_count, error_count, warning_count, info_count)
 
-        parts: list[str] = []
-        if self._detected_dialect and self._detected_dialect.dialect != "unknown":
-            parts.append(
-                self._tr("status.dialect_detected").format(
-                    dialect=self._tr(f"dialect.{self._detected_dialect.dialect}"),
-                    confidence=round(self._detected_dialect.confidence * 100),
-                )
-            )
-        if not issue_count:
-            parts.append(self._tr("status.no_issues"))
-
-        self.statusBar().showMessage("  |  ".join(parts))
+        self._update_detected_dialect_label()
+        self.statusBar().showMessage(self._tr("status.no_issues") if issue_count == 0 else "")
         self._refresh_status_profile_combo()
         self._canvas_panel.set_language(self._language)
         self._comment_panel.set_language(self._language)
@@ -454,6 +451,23 @@ class MainWindow(QMainWindow):
                 self._status_profile_combo.setToolTip("")
         finally:
             self._syncing_profile_combo = False
+
+    def _update_detected_dialect_label(self) -> None:
+        """Show detected dialect as a fixed right-side status widget."""
+        if self._status_dialect_label is None:
+            return
+
+        if self._detected_dialect is None or self._detected_dialect.dialect == "unknown":
+            self._status_dialect_label.setText("")
+            self._status_dialect_label.setToolTip("")
+            return
+
+        text = self._tr("status.dialect_detected").format(
+            dialect=self._tr(f"dialect.{self._detected_dialect.dialect}"),
+            confidence=round(self._detected_dialect.confidence * 100),
+        )
+        self._status_dialect_label.setText(text)
+        self._status_dialect_label.setToolTip(text)
 
     def _on_status_profile_selection_changed(self, _index: int) -> None:
         """Handle direct profile selection from status bar combobox."""
@@ -620,27 +634,45 @@ class MainWindow(QMainWindow):
         self._find_action.setText(self._tr("edit.find"))
         self._replace_action.setText(self._tr("edit.replace"))
         self._messages_action.setText(self._tr("edit.messages"))
-        self._update_issues_button(self._issues_total, self._issues_errors, self._issues_warnings)
+        self._update_issues_button(
+            self._issues_total,
+            self._issues_errors,
+            self._issues_warnings,
+            self._issues_infos,
+        )
+        self._update_detected_dialect_label()
         self._refresh_status_profile_combo()
         self._update_window_title()
         self._canvas_panel.set_language(self._language)
         self._comment_panel.set_language(self._language)
 
-    def _update_issues_button(self, total: int, errors: int, warnings: int) -> None:
+    def _update_issues_button(self, total: int, errors: int, warnings: int, infos: int) -> None:
+        if self._issues_button is None:
+            return
+
         self._issues_total = total
         self._issues_errors = errors
         self._issues_warnings = warnings
+        self._issues_infos = infos
         if total <= 0:
             self._issues_button.hide()
             return
+
         self._issues_button.show()
-        self._issues_button.setText(
-            self._tr("status.issues_button").format(
-                total=total,
-                errors=errors,
-                warnings=warnings,
-            )
-        )
+
+        parts: list[str] = []
+        if errors > 0:
+            parts.append(f'<span style="color:#d32f2f;">Error:{errors}</span>')
+        if warnings > 0:
+            parts.append(f'<span style="color:#1565c0;">Warning:{warnings}</span>')
+        if infos > 0:
+            parts.append(f'<span style="color:#2e7d32;">Info:{infos}</span>')
+
+        if not parts:
+            self._issues_button.hide()
+            return
+
+        self._issues_button.setText(f'<a href="open" style="text-decoration:none;">{", ".join(parts)}</a>')
 
     def _update_window_title(self) -> None:
         base = self._tr("title.untitled")
