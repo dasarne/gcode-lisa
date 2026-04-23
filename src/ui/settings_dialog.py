@@ -122,7 +122,7 @@ class SettingsDialog(QDialog):
 
     def get_selected_profile_id(self) -> str:
         """Return the profile id currently selected in the combo box."""
-        return self._profile_combo.currentData()
+        return str(self._profile_combo.currentData())
 
     def get_selected_version(self) -> str:
         """Backward-compatible alias for profile selection."""
@@ -138,11 +138,11 @@ class SettingsDialog(QDialog):
 
     def get_selected_language(self) -> str:
         """Return selected UI language code ('de' or 'en')."""
-        return self._language_combo.currentData()
+        return str(self._language_combo.currentData())
 
     def get_selected_mouse_nav_style(self) -> str:
         """Return selected mouse navigation style id."""
-        return self._mouse_nav_combo.currentData()
+        return str(self._mouse_nav_combo.currentData())
 
     def _on_profile_changed(self, _profile_name: str) -> None:
         """Refresh the feature table when the user picks a different profile."""

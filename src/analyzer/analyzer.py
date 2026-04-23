@@ -93,7 +93,7 @@ class GCodeAnalyzer:
                 if profile.family == "grbl":
                     message = f"{cmd} is not supported by GRBL {self.version_id}"
                     suggestion = "Use GRBL 1.1j for full command support."
-                else:
+                else:  # pragma: no cover – all non-GRBL profiles have empty unsupported_commands
                     message = f"{cmd} is not supported by {profile.name}"
                     suggestion = "Use a profile that supports this command."
                 warnings.append(AnalysisWarning(

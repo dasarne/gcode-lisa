@@ -198,6 +198,56 @@ def test_workpiece_z_origin_workpiece_surface(sample_gcode):
     assert "workpiece surface" in z_hints[0].message.lower()
 
 
+# ---------------------------------------------------------------------------
+# Non-GRBL dialect analyzer paths
+# ---------------------------------------------------------------------------
+
+def test_unknown_command_on_linuxcnc_profile_produces_error():
+    """A command outside the LinuxCNC profile must produce an ERROR, not a GRBL message."""
+    # Leading comment line ensures cmd-is-None path (line 77) is covered.
+    warnings = _analyze("; comment\nM104 S200", version="linuxcnc")
+    errors = _by_severity(warnings, WarningSeverity.ERROR)
+    assert len(errors) >= 1
+    assert "M104" in errors[0].message
+    assert "LinuxCNC" in errors[0].message
+    assert "GRBL" not in errors[0].message
+
+
+def test_unknown_command_on_marlin_profile_produces_error():
+    """A command outside the Marlin profile must produce an ERROR mentioning Marlin."""
+    warnings = _analyze("G38.2 Z-5 F100", version="marlin")
+    errors = _by_severity(warnings, WarningSeverity.ERROR)
+    assert len(errors) >= 1
+    assert "G38.2" in errors[0].message
+    assert "Marlin" in errors[0].message
+
+
+def test_supported_linuxcnc_command_no_error():
+    """A LinuxCNC-supported command (G43) must not produce a version-compatibility error."""
+    warnings = _analyze("G43 H1", version="linuxcnc")
+    errors = _by_severity(warnings, WarningSeverity.ERROR)
+    assert errors == []
+
+
+def test_supported_marlin_command_no_error():
+    """A Marlin-supported command (M104) must not produce a version-compatibility error."""
+    warnings = _analyze("M104 S200\nG1 X10 F300", version="marlin")
+    errors = _by_severity(warnings, WarningSeverity.ERROR)
+    assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# _check_missing_origin: program without any motion command
+# ---------------------------------------------------------------------------
+
+def test_no_origin_warning_when_no_motion():
+    """A program with only comments/spindle commands has no motion — no origin warning."""
+    # Comment line ensures cmd-is-None path (line 125) is covered.
+    warnings = _analyze("; setup\nM3 S1000\nM5")
+    origin_warnings = [w for w in warnings if "origin" in w.message.lower()]
+    assert origin_warnings == []
+
+
 def test_workpiece_geometry_no_info_for_empty_program():
     """A program with no motion lines must produce no geometry INFO hints."""
     warnings = _analyze("G21\nG90\nM30\n")

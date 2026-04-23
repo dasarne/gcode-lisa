@@ -123,7 +123,7 @@ def detect_dialect(content: str) -> DetectionResult:
     commands = _extract_commands(scan_text)
     scores, reasons = _score_dialects(content, commands)
 
-    best_dialect = max(scores, key=scores.get)
+    best_dialect = max(scores, key=lambda k: scores[k])
     best_score = scores[best_dialect]
 
     if best_score <= 0:

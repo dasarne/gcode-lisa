@@ -24,3 +24,6 @@ jobs:
       - name: Run black check
         continue-on-error: true
         run: black --check src/ tests/ --line-length=100
+      - name: Run mypy (non-UI modules)
+        continue-on-error: true
+        run: mypy src/analyzer src/gcode src/geometry --ignore-missing-imports --no-error-summary
