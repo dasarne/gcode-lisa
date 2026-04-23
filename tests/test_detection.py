@@ -12,6 +12,7 @@ G1 X10 Y10 E0.4 F1800
 """
     result = detect_dialect(content)
     assert result.dialect == "marlin"
+    assert result.profile_id == "marlin"
     assert result.confidence > 0.5
     assert any("Marlin-style" in r for r in result.reasons)
 
@@ -26,6 +27,7 @@ O100 endsub
 """
     result = detect_dialect(content)
     assert result.dialect == "linuxcnc"
+    assert result.profile_id == "linuxcnc"
     assert result.confidence > 0.5
     assert any("O-word" in r or "LinuxCNC-style" in r for r in result.reasons)
 

@@ -51,3 +51,12 @@ def test_get_version_compatibility_wrapper_uses_profile_registry():
     version = get_version("1.1j")
     assert version.profile_id == "1.1j"
     assert "M9" in version.supported_commands
+
+
+def test_non_grbl_profiles_exist_in_registry():
+    linuxcnc = get_profile("linuxcnc")
+    marlin = get_profile("marlin")
+    assert linuxcnc.family == "linuxcnc"
+    assert marlin.family == "marlin"
+    assert "M6" in linuxcnc.supported_commands
+    assert "M104" in marlin.supported_commands

@@ -77,18 +77,30 @@ class GCodeAnalyzer:
                 continue
 
             if cmd not in known_commands:
+                if profile.family == "grbl":
+                    message = f"{cmd} is not supported by GRBL"
+                    suggestion = "Remove or replace with a GRBL-compatible command."
+                else:
+                    message = f"{cmd} is not recognised for {profile.name}"
+                    suggestion = f"Remove or replace with a {profile.name}-compatible command."
                 warnings.append(AnalysisWarning(
                     severity=WarningSeverity.ERROR,
-                    message=f"{cmd} is not supported by GRBL",
+                    message=message,
                     line_number=gcode_line.line_number,
-                    suggestion="Remove or replace with a GRBL-compatible command.",
+                    suggestion=suggestion,
                 ))
             elif cmd in profile.unsupported_commands:
+                if profile.family == "grbl":
+                    message = f"{cmd} is not supported by GRBL {self.version_id}"
+                    suggestion = "Use GRBL 1.1j for full command support."
+                else:
+                    message = f"{cmd} is not supported by {profile.name}"
+                    suggestion = "Use a profile that supports this command."
                 warnings.append(AnalysisWarning(
                     severity=WarningSeverity.WARNING,
-                    message=f"{cmd} is not supported by GRBL {self.version_id}",
+                    message=message,
                     line_number=gcode_line.line_number,
-                    suggestion=f"Use GRBL 1.1j for full command support.",
+                    suggestion=suggestion,
                 ))
 
         return warnings

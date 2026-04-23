@@ -161,12 +161,22 @@ class GCodeParser:
             if cmd is None:
                 continue
             if cmd not in known_commands:
-                warnings.append(
-                    f"Line {line.line_number}: {cmd} is not a recognised GRBL command."
-                )
+                if profile.family == "grbl":
+                    warnings.append(
+                        f"Line {line.line_number}: {cmd} is not a recognised GRBL command."
+                    )
+                else:
+                    warnings.append(
+                        f"Line {line.line_number}: {cmd} is not recognised for {profile.name}."
+                    )
             elif cmd in profile.unsupported_commands:
-                warnings.append(
-                    f"Line {line.line_number}: {cmd} is not supported by GRBL {self.version_id}."
-                )
+                if profile.family == "grbl":
+                    warnings.append(
+                        f"Line {line.line_number}: {cmd} is not supported by GRBL {self.version_id}."
+                    )
+                else:
+                    warnings.append(
+                        f"Line {line.line_number}: {cmd} is not supported by {profile.name}."
+                    )
 
         return warnings

@@ -63,6 +63,36 @@ GRBL_1_1J = DialectProfile(
     notes="Full feature set including probing and coolant.",
 )
 
+LINUXCNC = DialectProfile(
+    profile_id="linuxcnc",
+    family="linuxcnc",
+    name="LinuxCNC",
+    description="LinuxCNC RS-274/NGC style controller profile",
+    supported_commands={
+        "G0", "G1", "G2", "G3", "G4",
+        "G17", "G18", "G19", "G20", "G21",
+        "G40", "G41", "G42", "G43", "G43.1", "G49",
+        "G53", "G54", "G55", "G56", "G57", "G58", "G59",
+        "G61", "G64", "G90", "G91", "G92", "G92.1",
+        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M30",
+    },
+    unsupported_commands=set(),
+    notes="Initial LinuxCNC profile for validation and detection.",
+)
+
+MARLIN = DialectProfile(
+    profile_id="marlin",
+    family="marlin",
+    name="Marlin",
+    description="Marlin 3D-printer firmware profile",
+    supported_commands={
+        "G0", "G1", "G2", "G3", "G4", "G28", "G29", "G90", "G91", "G92",
+        "M82", "M83", "M84", "M104", "M106", "M107", "M109", "M140", "M190",
+    },
+    unsupported_commands=set(),
+    notes="Initial Marlin profile focused on common slicer output.",
+)
+
 
 DEFAULT_PROFILE_ID = "1.1H"
 
@@ -70,6 +100,8 @@ PROFILE_MAP: dict[str, DialectProfile] = {
     GRBL_1_1.profile_id: GRBL_1_1,
     GRBL_1_1H.profile_id: GRBL_1_1H,
     GRBL_1_1J.profile_id: GRBL_1_1J,
+    LINUXCNC.profile_id: LINUXCNC,
+    MARLIN.profile_id: MARLIN,
 }
 
 
@@ -99,6 +131,8 @@ def is_command_supported(command: str, profile_id: str) -> bool:
     profile = get_profile(profile_id)
     if command in profile.unsupported_commands:
         return False
-    if profile.family == "grbl" and command not in ALL_COMMANDS:
-        return False
+    if profile.family == "grbl":
+        if command not in ALL_COMMANDS:
+            return False
+        return command in profile.supported_commands
     return command in profile.supported_commands

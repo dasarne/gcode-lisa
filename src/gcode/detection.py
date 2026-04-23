@@ -120,7 +120,7 @@ def detect_dialect(content: str) -> DetectionResult:
         reasons.append(profile_reason)
         confidence = (confidence + profile_conf) / 2.0
     else:
-        profile_id = None
+        profile_id = best_dialect
 
     if confidence < 0.45:
         # Ambiguous case - keep fallback behavior explicit.
