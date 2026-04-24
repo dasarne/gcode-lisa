@@ -163,6 +163,10 @@ class EditorPanel(QWidget):
         self._mouse_drag_mode: str | None = None
         self._mouse_drag_anchor_line: int | None = None
         self._mouse_drag_base_selection: set[int] = set()
+        # Stores the key modifiers from the most recent navigation keypress so
+        # _on_cursor_moved can react correctly.  None = cursor was NOT moved by
+        # a navigation key (e.g. moved by a mouse event that we later released).
+        self._key_nav_mods: Qt.KeyboardModifier | None = None
         self._suppress_cursor_events = False
         self._suppress_text_change = False
         self._managed_search_edit = False
@@ -285,10 +289,13 @@ class EditorPanel(QWidget):
                 end = max(self._selection_anchor_line, line_number)
                 self._multi_selected_lines = set(range(start, end + 1))
             else:
-                # Plain click: select single line, reset anchor.
+                # Plain click: if the line is already selected keep the whole
+                # multi-selection intact (avoids accidental deselect on tremor).
+                # Only reset when clicking on a line that is NOT selected.
                 self._mouse_drag_mode = "plain"
-                self._multi_selected_lines = {line_number}
-                self._selection_anchor_line = line_number
+                if line_number not in self._multi_selected_lines:
+                    self._multi_selected_lines = {line_number}
+                    self._selection_anchor_line = line_number
 
             self._suppress_cursor_events = True
             self._text_edit.setTextCursor(cursor)
@@ -307,7 +314,24 @@ class EditorPanel(QWidget):
             self._mouse_drag_mode = None
             self._mouse_drag_anchor_line = None
             self._mouse_drag_base_selection = set()
-            return True  # block native cursor-position change after drag/click
+            # Return False so Qt can deliver the MouseButtonDblClick event that
+            # follows a double-click (consuming Release blocks DblClick delivery).
+            return False
+
+        # Navigation keys (Arrow / Home / End / Page): record the modifier state
+        # so _on_cursor_moved can apply the right selection logic, then let
+        # native Qt move the cursor (return False).
+        if (
+            obj in (self._text_edit, self._text_edit.viewport())
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() in {
+                Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down,
+                Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+            }
+        ):
+            self._key_nav_mods = event.modifiers()
+            return False  # let native handle → _on_cursor_moved fires
 
         # Ctrl+A: select all lines.
         if (
@@ -1205,17 +1229,25 @@ class EditorPanel(QWidget):
         line_number = cursor.blockNumber() + 1
         self._selected_line = line_number
 
-        # Keyboard navigation: update line-level multi-select based on modifiers.
-        # All mouse events are fully intercepted in eventFilter, so this slot
-        # only fires for keyboard-driven cursor movement.
-        mods = QGuiApplication.keyboardModifiers()
+        if self._key_nav_mods is None:
+            # Cursor moved for a non-keyboard reason (e.g. mouse Release that we
+            # returned False from).  Keep the existing selection, just refresh visuals.
+            self._apply_extra_selections(cursor)
+            self.line_selected.emit(line_number)
+            self.lines_selected.emit(sorted(self._multi_selected_lines))
+            return
+
+        # Consume the pending flag – this is a keyboard-navigation move.
+        mods = self._key_nav_mods
+        self._key_nav_mods = None
+
         if bool(mods & Qt.KeyboardModifier.ShiftModifier) and self._selection_anchor_line is not None:
             # Shift+Arrow: extend range from anchor to cursor line.
             start = min(self._selection_anchor_line, line_number)
             end = max(self._selection_anchor_line, line_number)
             self._multi_selected_lines = set(range(start, end + 1))
         else:
-            # Plain movement: select cursor line only, reset anchor.
+            # Plain Arrow: move single-line selection to cursor line, reset anchor.
             self._multi_selected_lines = {line_number}
             self._selection_anchor_line = line_number
 
@@ -1305,11 +1337,17 @@ class EditorPanel(QWidget):
                 )
                 selections.append(multi_selection)
 
-        selection = QTextEdit.ExtraSelection()
-        selection.cursor = QTextCursor(cursor)
-        selection.cursor.clearSelection()
-        selection.format.setBackground(QColor(_CURRENT_LINE_COLOR))
-        selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-        selections.append(selection)
+        # Only show the current-line (blue) indicator when the cursor is on a
+        # line that is NOT already highlighted as a multi-selection (yellow).
+        # This makes the yellow selection clearly visible for every selected line,
+        # including after plain Arrow-key navigation.
+        cursor_line = cursor.blockNumber() + 1
+        if cursor_line not in self._multi_selected_lines:
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = QTextCursor(cursor)
+            selection.cursor.clearSelection()
+            selection.format.setBackground(QColor(_CURRENT_LINE_COLOR))
+            selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            selections.append(selection)
 
         self._text_edit.setExtraSelections(selections)
