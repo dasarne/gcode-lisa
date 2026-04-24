@@ -160,6 +160,10 @@ class EditorPanel(QWidget):
         self._multi_selected_lines: set[int] = set()
         self._selection_anchor_line: int | None = None
         self._selection_last_action_from_mouse = False
+        self._mouse_drag_active = False
+        self._mouse_drag_mode: str | None = None
+        self._mouse_drag_anchor_line: int | None = None
+        self._mouse_drag_base_selection: set[int] = set()
         self._suppress_cursor_events = False
         self._suppress_text_change = False
         self._managed_search_edit = False
@@ -199,16 +203,46 @@ class EditorPanel(QWidget):
         """Handle keyboard and mouse events for unified line-level multi-select."""
         if (
             obj is self._text_edit.viewport()
+            and event.type() == QEvent.Type.MouseButtonDblClick
+            and isinstance(event, QMouseEvent)
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            # Treat double-click like a normal single-line select.
+            cursor = self._text_edit.cursorForPosition(event.position().toPoint())
+            line_number = cursor.blockNumber() + 1
+            self._multi_selected_lines = {line_number}
+            self._selection_anchor_line = line_number
+            self._mouse_drag_active = False
+            self._selection_last_action_from_mouse = True
+            self._suppress_cursor_events = True
+            self._text_edit.setTextCursor(cursor)
+            self._suppress_cursor_events = False
+            self._apply_extra_selections(cursor)
+            self.lines_selected.emit(sorted(self._multi_selected_lines))
+            return True
+
+        if (
+            obj is self._text_edit.viewport()
             and event.type() == QEvent.Type.MouseMove
             and isinstance(event, QMouseEvent)
         ):
             self._update_hover_tooltip(event)
             # Drag: extend range selection while left button is held.
-            if bool(event.buttons() & Qt.MouseButton.LeftButton):
+            if bool(event.buttons() & Qt.MouseButton.LeftButton) and self._mouse_drag_active:
                 cursor = self._text_edit.cursorForPosition(event.position().toPoint())
                 line_number = cursor.blockNumber() + 1
-                anchor = self._selection_anchor_line if self._selection_anchor_line is not None else line_number
-                self._multi_selected_lines = set(range(min(anchor, line_number), max(anchor, line_number) + 1))
+
+                anchor = self._mouse_drag_anchor_line if self._mouse_drag_anchor_line is not None else line_number
+                lo = min(anchor, line_number)
+                hi = max(anchor, line_number)
+                dragged_range = set(range(lo, hi + 1))
+
+                if self._mouse_drag_mode == "ctrl":
+                    # Ctrl+drag adds a contiguous range to the selection.
+                    self._multi_selected_lines = self._mouse_drag_base_selection | dragged_range
+                else:
+                    self._multi_selected_lines = dragged_range
+
                 self._selection_last_action_from_mouse = True
                 self._suppress_cursor_events = True
                 self._text_edit.setTextCursor(cursor)
@@ -235,8 +269,13 @@ class EditorPanel(QWidget):
             ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
             shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
 
+            self._mouse_drag_active = True
+            self._mouse_drag_anchor_line = line_number
+            self._mouse_drag_base_selection = set(self._multi_selected_lines)
+
             if ctrl:
                 # Ctrl+Click: toggle the clicked line.
+                self._mouse_drag_mode = "ctrl"
                 if line_number in self._multi_selected_lines:
                     self._multi_selected_lines.discard(line_number)
                 else:
@@ -244,18 +283,20 @@ class EditorPanel(QWidget):
                     self._selection_anchor_line = line_number
             elif shift and self._selection_anchor_line is not None:
                 # Shift+Click: range-extend from anchor to clicked line.
+                self._mouse_drag_mode = "shift"
                 start = min(self._selection_anchor_line, line_number)
                 end = max(self._selection_anchor_line, line_number)
                 self._multi_selected_lines = set(range(start, end + 1))
             else:
                 # Plain click: select single line, reset anchor.
+                self._mouse_drag_mode = "plain"
                 self._multi_selected_lines = {line_number}
                 self._selection_anchor_line = line_number
 
+            self._selection_last_action_from_mouse = True
             self._suppress_cursor_events = True
             self._text_edit.setTextCursor(cursor)
             self._suppress_cursor_events = False
-            self._selection_last_action_from_mouse = True
             self._apply_extra_selections(cursor)
             self.lines_selected.emit(sorted(self._multi_selected_lines))
             return True  # block native character-level selection
@@ -266,30 +307,15 @@ class EditorPanel(QWidget):
             and isinstance(event, QMouseEvent)
             and event.button() == Qt.MouseButton.LeftButton
         ):
-            return True
-
-        # Double-click: treat as single-line select (block native word selection).
-        if (
-            obj is self._text_edit.viewport()
-            and event.type() == QEvent.Type.MouseButtonDblClick
-            and isinstance(event, QMouseEvent)
-            and event.button() == Qt.MouseButton.LeftButton
-        ):
-            cursor = self._text_edit.cursorForPosition(event.position().toPoint())
-            line_number = cursor.blockNumber() + 1
-            self._multi_selected_lines = {line_number}
-            self._selection_anchor_line = line_number
-            self._suppress_cursor_events = True
-            self._text_edit.setTextCursor(cursor)
-            self._suppress_cursor_events = False
-            self._selection_last_action_from_mouse = True
-            self._apply_extra_selections(cursor)
-            self.lines_selected.emit(sorted(self._multi_selected_lines))
-            return True
+            self._mouse_drag_active = False
+            self._mouse_drag_mode = None
+            self._mouse_drag_anchor_line = None
+            self._mouse_drag_base_selection = set()
+            return False
 
         # Ctrl+A: select all lines.
         if (
-            obj is self._text_edit
+            obj in (self._text_edit, self._text_edit.viewport())
             and event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
             and event.key() == Qt.Key.Key_A
@@ -305,13 +331,34 @@ class EditorPanel(QWidget):
             return True
 
         if (
-            obj is self._text_edit
+            obj in (self._text_edit, self._text_edit.viewport())
             and event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
             and self._multi_selected_lines
         ):
             key = event.key()
             mods = event.modifiers()
+
+            if bool(mods & Qt.KeyboardModifier.ControlModifier) and key in {
+                Qt.Key.Key_Left,
+                Qt.Key.Key_Right,
+                Qt.Key.Key_Up,
+                Qt.Key.Key_Down,
+            }:
+                move = {
+                    Qt.Key.Key_Left: QTextCursor.MoveOperation.PreviousWord,
+                    Qt.Key.Key_Right: QTextCursor.MoveOperation.NextWord,
+                    Qt.Key.Key_Up: QTextCursor.MoveOperation.Up,
+                    Qt.Key.Key_Down: QTextCursor.MoveOperation.Down,
+                }[key]
+                nav_cursor = self._text_edit.textCursor()
+                nav_cursor.movePosition(move)
+                self._suppress_cursor_events = True
+                self._text_edit.setTextCursor(nav_cursor)
+                self._suppress_cursor_events = False
+                self._selection_last_action_from_mouse = False
+                self._on_cursor_moved()
+                return True
 
             if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self._delete_multi_selected_lines()
@@ -1191,9 +1238,16 @@ class EditorPanel(QWidget):
             self.lines_selected.emit(sorted(self._multi_selected_lines))
             return
 
+        mods = QGuiApplication.keyboardModifiers()
+        if bool(mods & Qt.KeyboardModifier.ControlModifier) and self._multi_selected_lines:
+            # Keep explicit multi-selection stable while Ctrl is held.
+            self._apply_extra_selections(cursor)
+            self.line_selected.emit(line_number)
+            self.lines_selected.emit(sorted(self._multi_selected_lines))
+            return
+
         # Keyboard navigation: update line-level multi-select based on modifiers.
         # (Mouse-driven cursor moves are handled in eventFilter and suppressed here.)
-        mods = QGuiApplication.keyboardModifiers()
         if bool(mods & Qt.KeyboardModifier.ShiftModifier) and self._selection_anchor_line is not None:
             # Shift+Arrow: extend range from anchor to cursor line.
             start = min(self._selection_anchor_line, line_number)
