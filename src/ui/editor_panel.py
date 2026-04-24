@@ -158,6 +158,7 @@ class EditorPanel(QWidget):
         self._search_scope: tuple[int, int] | None = None
         self._search_matches: list[tuple[int, int]] = []
         self._multi_selected_lines: set[int] = set()
+        self._selection_anchor_line: int | None = None
         self._suppress_cursor_events = False
         self._suppress_text_change = False
         self._managed_search_edit = False
@@ -194,46 +195,107 @@ class EditorPanel(QWidget):
         layout.addWidget(self._text_edit)
 
     def eventFilter(self, obj, event) -> bool:
-        """Handle keyboard and mouse events for multi-line canvas selection."""
+        """Handle keyboard and mouse events for unified line-level multi-select."""
         if (
             obj is self._text_edit.viewport()
             and event.type() == QEvent.Type.MouseMove
             and isinstance(event, QMouseEvent)
         ):
             self._update_hover_tooltip(event)
+            # Drag: extend range selection while left button is held.
+            if bool(event.buttons() & Qt.MouseButton.LeftButton):
+                cursor = self._text_edit.cursorForPosition(event.position().toPoint())
+                line_number = cursor.blockNumber() + 1
+                anchor = self._selection_anchor_line if self._selection_anchor_line is not None else line_number
+                self._multi_selected_lines = set(range(min(anchor, line_number), max(anchor, line_number) + 1))
+                self._suppress_cursor_events = True
+                self._text_edit.setTextCursor(cursor)
+                self._suppress_cursor_events = False
+                self._apply_extra_selections(cursor)
+                self.lines_selected.emit(sorted(self._multi_selected_lines))
+                return True
             return False
 
         if obj is self._text_edit.viewport() and event.type() == QEvent.Type.Leave:
             QToolTip.hideText()
             return False
 
-        # Ctrl+Click on the text area toggles the clicked line in the multi-selection.
+        # Intercept ALL left-click presses – convert to line-level multi-select.
         if (
             obj is self._text_edit.viewport()
             and event.type() == QEvent.Type.MouseButtonPress
             and isinstance(event, QMouseEvent)
             and event.button() == Qt.MouseButton.LeftButton
-            and bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         ):
             cursor = self._text_edit.cursorForPosition(event.position().toPoint())
             line_number = cursor.blockNumber() + 1
-            if line_number in self._multi_selected_lines:
-                self._multi_selected_lines.discard(line_number)
+            mods = event.modifiers()
+            ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+            shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+
+            if ctrl:
+                # Ctrl+Click: toggle the clicked line.
+                if line_number in self._multi_selected_lines:
+                    self._multi_selected_lines.discard(line_number)
+                else:
+                    self._multi_selected_lines.add(line_number)
+                    self._selection_anchor_line = line_number
+            elif shift and self._selection_anchor_line is not None:
+                # Shift+Click: range-extend from anchor to clicked line.
+                start = min(self._selection_anchor_line, line_number)
+                end = max(self._selection_anchor_line, line_number)
+                self._multi_selected_lines = set(range(start, end + 1))
             else:
-                self._multi_selected_lines.add(line_number)
+                # Plain click: select single line, reset anchor.
+                self._multi_selected_lines = {line_number}
+                self._selection_anchor_line = line_number
+
             self._suppress_cursor_events = True
             self._text_edit.setTextCursor(cursor)
             self._suppress_cursor_events = False
             self._apply_extra_selections(cursor)
             self.lines_selected.emit(sorted(self._multi_selected_lines))
-            return True  # block default – prevents normal click from clearing selection
+            return True  # block native character-level selection
+
+        # Double-click: treat as single-line select (block native word selection).
+        if (
+            obj is self._text_edit.viewport()
+            and event.type() == QEvent.Type.MouseButtonDblClick
+            and isinstance(event, QMouseEvent)
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            cursor = self._text_edit.cursorForPosition(event.position().toPoint())
+            line_number = cursor.blockNumber() + 1
+            self._multi_selected_lines = {line_number}
+            self._selection_anchor_line = line_number
+            self._suppress_cursor_events = True
+            self._text_edit.setTextCursor(cursor)
+            self._suppress_cursor_events = False
+            self._apply_extra_selections(cursor)
+            self.lines_selected.emit(sorted(self._multi_selected_lines))
+            return True
+
+        # Ctrl+A: select all lines.
+        if (
+            obj is self._text_edit
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_A
+            and bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        ):
+            doc = self._text_edit.document()
+            total = doc.blockCount()
+            self._multi_selected_lines = set(range(1, total + 1))
+            self._selection_anchor_line = 1
+            self._apply_extra_selections()
+            self.lines_selected.emit(sorted(self._multi_selected_lines))
+            return True
 
         if (
             obj is self._text_edit
             and event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
             and self._multi_selected_lines
-            and not self._text_edit.textCursor().hasSelection()
         ):
             key = event.key()
             mods = event.modifiers()
@@ -291,15 +353,14 @@ class EditorPanel(QWidget):
         block = doc.findBlockByLineNumber(line_number - 1)
         if not block.isValid():
             return
-        self._multi_selected_lines.clear()
+        self._multi_selected_lines = {line_number}
+        self._selection_anchor_line = line_number
         self._selected_line = line_number
         cursor = QTextCursor(block)
-        # Select the full line so a canvas/comment click produces a real text selection.
-        cursor.movePosition(
-            QTextCursor.MoveOperation.EndOfBlock,
-            QTextCursor.MoveMode.KeepAnchor,
-        )
+        cursor.clearSelection()
+        self._suppress_cursor_events = True
         self._text_edit.setTextCursor(cursor)
+        self._suppress_cursor_events = False
         self._text_edit.centerCursor()
         self._apply_extra_selections(cursor)
 
@@ -322,6 +383,7 @@ class EditorPanel(QWidget):
             return
         self._selected_line = first
         self._multi_selected_lines = set(valid_lines)
+        self._selection_anchor_line = first
         cursor = QTextCursor(first_block)
         cursor.clearSelection()
         self._suppress_cursor_events = True
@@ -487,7 +549,7 @@ class EditorPanel(QWidget):
         return "\n".join(parts)
 
     def copy(self) -> None:
-        if self._multi_selected_lines and not self._text_edit.textCursor().hasSelection():
+        if self._multi_selected_lines:
             self._copy_multi_selected_lines()
         else:
             self._text_edit.copy()
@@ -521,7 +583,15 @@ class EditorPanel(QWidget):
         return self._text_edit.document().isRedoAvailable()
 
     def get_selected_text(self) -> str:
-        """Return currently selected text."""
+        """Return text of currently selected lines."""
+        if self._multi_selected_lines:
+            doc = self._text_edit.document()
+            lines_text: list[str] = []
+            for ln in sorted(self._multi_selected_lines):
+                block = doc.findBlockByLineNumber(ln - 1)
+                if block.isValid():
+                    lines_text.append(block.text())
+            return "\n".join(lines_text)
         cursor = self._text_edit.textCursor()
         return cursor.selectedText()
 
@@ -1089,29 +1159,30 @@ class EditorPanel(QWidget):
         line_number = cursor.blockNumber() + 1
         self._selected_line = line_number
 
+        # Keyboard navigation: update line-level multi-select based on modifiers.
+        # (Mouse-driven cursor moves are handled in eventFilter and suppressed here.)
+        mods = QGuiApplication.keyboardModifiers()
+        if bool(mods & Qt.KeyboardModifier.ShiftModifier) and self._selection_anchor_line is not None:
+            # Shift+Arrow: extend range from anchor to cursor line.
+            start = min(self._selection_anchor_line, line_number)
+            end = max(self._selection_anchor_line, line_number)
+            self._multi_selected_lines = set(range(start, end + 1))
+        else:
+            # Plain movement: select cursor line only, reset anchor.
+            self._multi_selected_lines = {line_number}
+            self._selection_anchor_line = line_number
+
+        # Clear any native text selection – we use _multi_selected_lines for all visuals.
         if cursor.hasSelection():
-            self._multi_selected_lines.clear()
-        elif self._multi_selected_lines:
-            # Manual cursor move/click exits non-contiguous multi-selection mode.
-            self._multi_selected_lines.clear()
+            bare = QTextCursor(cursor)
+            bare.clearSelection()
+            self._suppress_cursor_events = True
+            self._text_edit.setTextCursor(bare)
+            self._suppress_cursor_events = False
 
         self._apply_extra_selections(cursor)
         self.line_selected.emit(line_number)
-
-        if self._multi_selected_lines:
-            lines = sorted(self._multi_selected_lines)
-        elif cursor.hasSelection():
-            doc = self._text_edit.document()
-            sel_start = cursor.selectionStart()
-            sel_end   = cursor.selectionEnd()
-            start_block = doc.findBlock(sel_start).blockNumber()
-            # Use sel_end-1 so a selection ending exactly at a block boundary
-            # does not accidentally include the next (unselected) line.
-            end_block = doc.findBlock(max(sel_start, sel_end - 1)).blockNumber()
-            lines: list[int] = list(range(start_block + 1, end_block + 2))
-        else:
-            lines = [line_number]
-        self.lines_selected.emit(lines)
+        self.lines_selected.emit(sorted(self._multi_selected_lines))
 
     def _on_text_changed(self) -> None:
         if self._suppress_text_change:
