@@ -205,7 +205,10 @@ class EditorPanel(QWidget):
     def set_profile_id(self, profile_id: str | None) -> None:
         """Update the active dialect profile and refresh syntax highlighting."""
         self._profile_id = profile_id
+        # rehighlight() triggers textChanged which would re-enter _on_editor_content_changed.
+        self._suppress_text_change = True
         self._syntax.update_profile(profile_id)
+        self._suppress_text_change = False
 
     def _setup_ui(self) -> None:
         """Build the editor layout."""
@@ -385,7 +388,7 @@ class EditorPanel(QWidget):
             obj in (self._text_edit, self._text_edit.viewport())
             and event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
-            and self._multi_selected_lines
+            and len(self._multi_selected_lines) > 1
         ):
             key = event.key()
             mods = event.modifiers()
