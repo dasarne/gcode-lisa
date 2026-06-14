@@ -1,5 +1,8 @@
 name: Build
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ main ]
@@ -9,6 +12,9 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
+
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
