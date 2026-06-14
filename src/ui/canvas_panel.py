@@ -35,6 +35,11 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ..analyzer.analyzer import AnalysisWarning, WarningSeverity
 from ..geometry.path import PathType, ToolPath
+from .view_math import (
+    axis_tick_steps,
+    nice_integer_step,
+    normalized_spacing_step,
+)
 from .warnings_dialog import WarningsDialog
 
 # ---------------------------------------------------------------------------
@@ -163,12 +168,7 @@ def _make_grid_lines(
     gymin, gymax = ymin - pad_y, ymax + pad_y
 
     span = max(gxmax - gxmin, gymax - gymin, 1.0)
-    raw_step = span / 10.0
-    magnitude = 10 ** math.floor(math.log10(raw_step))
-    step = next(
-        (n * magnitude for n in (1, 2, 5, 10) if raw_step <= n * magnitude),
-        10 * magnitude,
-    )
+    step = normalized_spacing_step(span)
 
     lines: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
     y = math.floor(gymin / step) * step
@@ -182,48 +182,25 @@ def _make_grid_lines(
     return lines
 
 
-def _nice_integer_step(min_step: float) -> int:
-    """Return a human-friendly integer step >= min_step."""
-    if min_step <= 1.0:
-        return 1
+def _axis_limits(min_value: float, max_value: float) -> tuple[int, int]:
+    """Return padded integer axis limits biased toward the dominant extent."""
+    neg_extent = abs(min(0.0, min_value))
+    pos_extent = max(0.0, max_value)
 
-    magnitude = 10 ** math.floor(math.log10(min_step))
-    for factor in (1, 2, 5, 10):
-        step = factor * magnitude
-        if step >= min_step:
-            return int(step)
-    return int(10 * magnitude)
+    if neg_extent > pos_extent:
+        dominant_extent = max(neg_extent, 1.0)
+        pad = max(dominant_extent * 0.05, 1.0)
+        start = -math.ceil(dominant_extent + pad)
+        end = 0
+    else:
+        dominant_extent = max(pos_extent, 1.0)
+        pad = max(dominant_extent * 0.05, 1.0)
+        start = 0
+        end = math.ceil(dominant_extent + pad)
 
-
-def _axis_tick_steps(
-    start: int,
-    end: int,
-    unit_screen_px: float,
-    max_ticks: int = 20,
-) -> tuple[int, int | None]:
-    """Return major/minor integer tick steps for an axis span and screen length."""
-    span = max(end - start, 1)
-    min_major_step = max(1, math.ceil(28.0 / max(unit_screen_px, 1e-6)))
-    major_step = max(
-        _nice_integer_step(span / max(max_ticks / 2, 1)),
-        _nice_integer_step(min_major_step),
-    )
-
-    minor_step: int | None = None
-    for divisor in (5, 2):
-        if major_step % divisor != 0:
-            continue
-        candidate = major_step // divisor
-        if candidate < 1:
-            continue
-        if candidate * unit_screen_px < 12.0:
-            continue
-        tick_count = span / candidate + 1
-        if tick_count <= max_ticks:
-            minor_step = candidate
-            break
-
-    return major_step, minor_step
+    if start == end:
+        end += 1
+    return start, end
 
 
 # ---------------------------------------------------------------------------
@@ -884,25 +861,6 @@ class _IsometricViewport(QWidget):
             wx_min = wy_min = wz_min = 0.0
             wx_max = wy_max = wz_max = 5.0
 
-        def axis_limits(min_value: float, max_value: float) -> tuple[int, int]:
-            neg_extent = abs(min(0.0, min_value))
-            pos_extent = max(0.0, max_value)
-
-            if neg_extent > pos_extent:
-                dominant_extent = max(neg_extent, 1.0)
-                pad = max(dominant_extent * 0.05, 1.0)
-                start = -math.ceil(dominant_extent + pad)
-                end = 0
-            else:
-                dominant_extent = max(pos_extent, 1.0)
-                pad = max(dominant_extent * 0.05, 1.0)
-                start = 0
-                end = math.ceil(dominant_extent + pad)
-
-            if start == end:
-                end += 1
-            return start, end
-
         def to_screen(point: QPointF) -> QPointF:
             return QPointF(
                 point.x() * self._zoom + self._pan.x(),
@@ -955,7 +913,7 @@ class _IsometricViewport(QWidget):
         for label, start, end, pen, color, point_on_axis, unit_point in (
             (
                 "X",
-                *axis_limits(wx_min, wx_max),
+                *_axis_limits(wx_min, wx_max),
                 _PEN_AX_X,
                 _AX_X_COLOR,
                 lambda value: (value, 0.0, 0.0),
@@ -963,7 +921,7 @@ class _IsometricViewport(QWidget):
             ),
             (
                 "Y",
-                *axis_limits(wy_min, wy_max),
+                *_axis_limits(wy_min, wy_max),
                 _PEN_AX_Y,
                 _AX_Y_COLOR,
                 lambda value: (0.0, value, 0.0),
@@ -971,7 +929,7 @@ class _IsometricViewport(QWidget):
             ),
             (
                 "Z",
-                *axis_limits(wz_min, wz_max),
+                *_axis_limits(wz_min, wz_max),
                 _PEN_AX_Z,
                 _AX_Z_COLOR,
                 lambda value: (0.0, 0.0, value),
@@ -994,7 +952,7 @@ class _IsometricViewport(QWidget):
             minor_tick_half = 2.5
             label_offset = 10.0
 
-            major_step, minor_step = _axis_tick_steps(start, end, dir_len)
+            major_step, minor_step = axis_tick_steps(start, end, dir_len)
             tick_values = range(start, end + 1, minor_step or major_step)
 
             for value in tick_values:

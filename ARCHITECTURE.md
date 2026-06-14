@@ -66,6 +66,71 @@ The bidirectional binding between the editor and canvas is implemented via Qt si
 
 Each `PathSegment` stores the source `line_number` from the parsed G-Code, enabling O(1) lookup in both directions.
 
+## Canvas Rendering Architecture Notes
+
+The canvas subsystem is performance critical and intentionally optimized for:
+- predictable repaint behavior
+- low-latency interaction
+- explicit geometry preparation
+- centralized paint orchestration
+
+### Important Constraints
+
+Avoid:
+- unnecessary geometry rebuilds
+- hidden repaint-trigger side effects
+- expensive calculations inside repaint paths
+- duplicated coordinate transforms
+- implicit cache invalidation
+- unnecessary allocations during rendering
+
+Preserve:
+- explicit coordinate-space handling
+- centralized repaint sequencing
+- stable editor ↔ canvas synchronization
+- deterministic viewport behavior
+
+### Coordinate Spaces
+
+Canvas rendering currently relies on explicit transformation boundaries between:
+- world space
+- viewport space
+- screen space
+
+Coordinate-space consistency is critical for:
+- hit-testing
+- overlays
+- selection accuracy
+- highlight rendering
+- viewport stability
+
+### Cache Ownership
+
+Geometry caches and invalidation behavior should remain:
+- explicit
+- traceable
+- deterministic
+
+Avoid introducing hidden rebuild side effects.
+
+### Refactor Guidance
+
+Conservative extraction is preferred over aggressive modularization.
+
+Safer extraction targets:
+- pure projection helpers
+- viewport math helpers
+- render-independent geometry utilities
+
+Higher-risk areas that should remain centralized unless explicitly reworked:
+- paint orchestration
+- repaint sequencing
+- viewport interaction state machine
+- transient interaction coordination
+
+See:
+- `docs/architecture/canvas_refactor_plan.md`
+
 ## Technology Choices Rationale
 
 | Choice | Reason |

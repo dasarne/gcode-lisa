@@ -2,7 +2,15 @@
 
 import os
 import sys
+
 import pytest
+
+from src.ui.canvas_panel import _axis_limits
+from src.ui.view_math import (
+    axis_tick_steps,
+    nice_integer_step,
+    normalized_spacing_step,
+)
 
 
 @pytest.mark.skipif(
@@ -12,6 +20,110 @@ import pytest
 def test_main_window_import():
     """MainWindow should be importable."""
     from src.ui.main_window import MainWindow  # noqa: F401
+
+
+@pytest.mark.parametrize(
+    ("min_step", "expected"),
+    [
+        (0.0, 1),
+        (0.1, 1),
+        (0.999, 1),
+        (1.0, 1),
+        (1.1, 2),
+        (2.1, 5),
+        (5.1, 10),
+        (11.0, 20),
+        (99.0, 100),
+        (101.0, 200),
+    ],
+)
+def test_nice_integer_step(min_step, expected):
+    """Integer helper should round up to stable human-friendly steps."""
+    assert nice_integer_step(min_step) == expected
+
+
+@pytest.mark.parametrize(
+    ("min_value", "max_value", "expected"),
+    [
+        (0.0, 0.0, (0, 2)),
+        (2.0, 10.0, (0, 11)),
+        (-10.0, 3.0, (-11, 0)),
+        (-2.0, 8.0, (0, 9)),
+    ],
+)
+def test_axis_limits(min_value, max_value, expected):
+    """Axis limits should preserve dominant direction and padding."""
+    assert _axis_limits(min_value, max_value) == expected
+
+
+def test_axis_tick_steps_generates_major_and_minor_ticks():
+    """Axis tick helper should generate stable major/minor intervals."""
+    major_step, minor_step = axis_tick_steps(
+        start=0,
+        end=20,
+        unit_screen_px=20.0,
+    )
+
+    assert major_step == 2
+    assert minor_step is None
+
+
+@pytest.mark.parametrize(
+    (
+        "start",
+        "end",
+        "unit_screen_px",
+        "max_ticks",
+        "expected_major",
+        "expected_minor",
+    ),
+        [
+            (0, 0, 20.0, 20, 2, None),
+            (0, 100, 100.0, 20, 10, None),
+            (0, 100, 5.0, 20, 10, None),
+            (0, 1000, 0.01, 20, 5000, 2500),
+            (-50, 50, 30.0, 20, 10, None),
+        ],
+)
+def test_axis_tick_steps_handles_density_and_span_edge_cases(
+    start,
+    end,
+    unit_screen_px,
+    max_ticks,
+    expected_major,
+    expected_minor,
+):
+    """Axis tick math should remain deterministic across edge-case spans."""
+    major_step, minor_step = axis_tick_steps(
+        start=start,
+        end=end,
+        unit_screen_px=unit_screen_px,
+        max_ticks=max_ticks,
+    )
+
+    assert major_step == expected_major
+    assert minor_step == expected_minor
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"),
+    [
+        (0.0, 0.1),
+        (1.0, 0.1),
+        (9.0, 1.0),
+        (10.0, 1.0),
+        (11.0, 2.0),
+        (49.0, 5.0),
+        (50.0, 5.0),
+        (51.0, 10.0),
+        (499.0, 50.0),
+        (500.0, 50.0),
+        (501.0, 100.0),
+    ],
+)
+def test_normalized_spacing_step_preserves_stable_progression(span, expected):
+    """Spacing progression should remain deterministic across span changes."""
+    assert normalized_spacing_step(span) == expected
 
 
 def test_main_opens_startup_file(monkeypatch):
