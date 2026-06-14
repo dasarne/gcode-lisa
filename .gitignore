@@ -47,3 +47,4 @@ htmlcov/
 
 # Distribution
 *.spec
+!packaging/*.spec
