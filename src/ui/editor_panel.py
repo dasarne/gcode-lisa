@@ -1,7 +1,7 @@
 """G-Code editor panel."""
 
 import re
-from PyQt6.QtWidgets import QVBoxLayout, QWidget, QTextEdit, QToolTip
+from PyQt6.QtWidgets import QWidget, QTextEdit, QToolTip
 from PyQt6.QtCore import pyqtSignal, QEvent, Qt
 from PyQt6.QtGui import (
     QTextCharFormat,
@@ -19,8 +19,49 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import QRegularExpression
 
 from ..analyzer.analyzer import AnalysisWarning, WarningSeverity
-from ..gcode.commands import EXTENDED_COMMAND_DESCRIPTIONS
 from ..gcode.dialects import get_profile
+from .editor.editor_search import (
+    EditorSearchState,
+    get_search_bounds,
+    get_search_ranges,
+    shift_scope_after_replace,
+    update_search_scope,
+)
+from .editor.editor_comments import (
+    update_hover_tooltip,
+)
+from .editor.editor_widget import (
+    add_editor_to_layout,
+    configure_editor_document,
+    connect_editor_signals,
+    create_editor_layout,
+    create_editor_widget,
+    enable_editor_mouse_tracking,
+    get_editor_document,
+    install_editor_event_filters,
+)
+from .editor.editor_highlighting import (
+    EditorHighlightState,
+    apply_editor_overlay_selections,
+)
+from .editor.editor_selection import (
+    EditorSelectionState,
+    capture_locked_selection,
+    clear_line_selection,
+    create_line_range_cursor,
+    create_range_cursor,
+    get_selected_lines,
+    restore_locked_selection_cursor,
+    update_multi_line_selection,
+    update_single_line_selection,
+)
+from .editor.editor_undo import (
+    delete_document_range,
+    grouped_edit,
+    replace_document_range,
+    restore_plain_cursor,
+    restore_scrollbars,
+)
 from .search_service import (
     compute_match_ranges,
     find_next_match,
@@ -28,46 +69,6 @@ from .search_service import (
     replace_all_in_ranges,
 )
 from .widgets import GCodeEditor
-
-_SEVERITY_COLORS: dict[WarningSeverity, str] = {
-    WarningSeverity.ERROR: "#FFCCCC",
-    WarningSeverity.WARNING: "#FFF3CC",
-    WarningSeverity.INFO: "#CCE5FF",
-}
-
-_CURRENT_LINE_COLOR = "#D9E8FF"
-_MULTI_LINE_SELECTION_COLOR = "#FFE3B8"
-_SEARCH_SCOPE_COLOR = "#FFF4BF"
-_SEARCH_MATCH_COLOR = "#CCF5CC"
-
-_CMD_TOKEN_RE = re.compile(r"\b([GMT]\d+(?:\.\d+)?)\b", re.IGNORECASE)
-_PARAM_TOKEN_RE = re.compile(r"\b([A-Z])([-+]?\d*\.?\d+)\b", re.IGNORECASE)
-_PAREN_COMMENT_RE = re.compile(r"\([^)]*\)")
-
-_PARAM_EXPLANATIONS_DE: dict[str, str] = {
-    "X": "X-Koordinate",
-    "Y": "Y-Koordinate",
-    "Z": "Z-Koordinate",
-    "A": "A-Achse (Mehrachsensystem)",
-    "B": "B-Achse (Mehrachsensystem)",
-    "C": "C-Achse (Mehrachsensystem)",
-    "I": "Relativer Kreismittelpunkt I (X-Anteil)",
-    "J": "Relativer Kreismittelpunkt J (Y-Anteil)",
-    "F": "Vorschub",
-}
-
-_PARAM_EXPLANATIONS_EN: dict[str, str] = {
-    "X": "X coordinate",
-    "Y": "Y coordinate",
-    "Z": "Z coordinate",
-    "A": "A axis (multi-axis system)",
-    "B": "B axis (multi-axis system)",
-    "C": "C axis (multi-axis system)",
-    "I": "Arc centre offset I (X component)",
-    "J": "Arc centre offset J (Y component)",
-    "F": "Feed rate",
-}
-
 
 class _GCodeSyntaxHighlighter(QSyntaxHighlighter):
     """Syntax highlighter for G-code commands, axis words, and comments."""
@@ -182,12 +183,10 @@ class EditorPanel(QWidget):
         self._selected_line: int | None = None
         self._warning_severity: dict[int, WarningSeverity] = {}
         self._line_warnings: dict[int, list[AnalysisWarning]] = {}
-        self._search_scope: tuple[int, int] | None = None
-        self._search_matches: list[tuple[int, int]] = []
-        self._multi_selected_lines: set[int] = set()
-        self._selection_anchor_line: int | None = None
+        self._search_state = EditorSearchState()
+        self._highlight_state = EditorHighlightState()
+        self._selection_state = EditorSelectionState()
         self._interaction_lock = False
-        self._locked_selection: tuple[int, int] | None = None
         self._suppress_cursor_events = False
         self._suppress_text_change = False
         self._managed_search_edit = False
@@ -206,31 +205,24 @@ class EditorPanel(QWidget):
 
     def _setup_ui(self) -> None:
         """Build the editor layout."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout = create_editor_layout(self)
 
-        self._text_edit = GCodeEditor()
-        self._text_edit.setReadOnly(False)
-        self._text_edit.setLineWrapMode(GCodeEditor.LineWrapMode.NoWrap)
-        doc = self._text_edit.document()
-        doc.setUndoRedoEnabled(True)
+        self._text_edit = create_editor_widget()
+
+        doc = configure_editor_document(self._text_edit)
         self._syntax = _GCodeSyntaxHighlighter(doc)
-        # Keep native text selection behavior but with a softer background so
-        # syntax highlighting remains visually easier to read.
-        palette = self._text_edit.palette()
-        soft_selection = QColor("#DCEBFF")
-        palette.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight, soft_selection)
-        palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, soft_selection)
-        palette.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText, QColor("#111111"))
-        palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText, QColor("#111111"))
-        self._text_edit.setPalette(palette)
-        self._text_edit.viewport().setMouseTracking(True)
 
-        self._text_edit.installEventFilter(self)
-        self._text_edit.viewport().installEventFilter(self)
-        self._text_edit.cursorPositionChanged.connect(self._on_cursor_moved)
-        self._text_edit.textChanged.connect(self._on_text_changed)
-        layout.addWidget(self._text_edit)
+        enable_editor_mouse_tracking(self._text_edit)
+
+        install_editor_event_filters(self._text_edit, self)
+
+        connect_editor_signals(
+            self._text_edit,
+            self._on_cursor_moved,
+            self._on_text_changed,
+        )
+
+        add_editor_to_layout(layout, self._text_edit)
 
     def eventFilter(self, obj, event) -> bool:
         """Handle hover tooltips without overriding native editor selection."""
@@ -263,7 +255,13 @@ class EditorPanel(QWidget):
             and event.type() == QEvent.Type.MouseMove
             and isinstance(event, QMouseEvent)
         ):
-            self._update_hover_tooltip(event)
+            update_hover_tooltip(
+                text_edit=self._text_edit,
+                event=event,
+                language=self._language,
+                profile_id=self._profile_id,
+                line_warnings=self._line_warnings,
+            )
             return False
 
         if obj is self._text_edit.viewport() and event.type() == QEvent.Type.Leave:
@@ -276,51 +274,52 @@ class EditorPanel(QWidget):
         """Lock manual source edits/selection changes while keeping undo/redo available."""
         self._interaction_lock = locked
         if not locked:
-            self._locked_selection = None
+            self._selection_state.locked_selection = None
             return
 
-        cursor = self._text_edit.textCursor()
-        if cursor.hasSelection():
-            self._locked_selection = (cursor.selectionStart(), cursor.selectionEnd())
-        else:
-            pos = cursor.position()
-            self._locked_selection = (pos, pos)
+        capture_locked_selection(
+            self._selection_state,
+            self._text_edit.textCursor(),
+            self._interaction_lock,
+        )
 
     def _capture_locked_selection(self, cursor: QTextCursor) -> None:
-        if not self._interaction_lock:
-            return
-        if cursor.hasSelection():
-            self._locked_selection = (cursor.selectionStart(), cursor.selectionEnd())
-        else:
-            pos = cursor.position()
-            self._locked_selection = (pos, pos)
+        capture_locked_selection(
+            self._selection_state,
+            cursor,
+            self._interaction_lock,
+        )
 
     def _restore_locked_selection(self) -> None:
-        if not self._interaction_lock or self._locked_selection is None:
+        if not self._interaction_lock:
             return
-        start, end = self._locked_selection
-        doc_len = len(self._text_edit.toPlainText())
-        start = max(0, min(start, doc_len))
-        end = max(0, min(end, doc_len))
 
-        cursor = self._text_edit.textCursor()
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        cursor = restore_locked_selection_cursor(
+            self._document(),
+            self._selection_state.locked_selection,
+        )
+        if cursor is None:
+            return
         self._suppress_cursor_events = True
         self._text_edit.setTextCursor(cursor)
         self._suppress_cursor_events = False
+
+    def _document(self) -> QTextDocument:
+        """Return the active editor document with a non-optional type."""
+        return get_editor_document(self._text_edit)
 
     def load_content(self, content: str) -> None:
         """Load G-Code text into the editor."""
         self._suppress_text_change = True
         self._text_edit.setPlainText(content)
-        self._text_edit.document().setModified(False)
+        document = self._text_edit.document()
+        assert document is not None
+        document.setModified(False)
         self._warning_severity.clear()
         self._line_warnings.clear()
-        self._search_scope = None
-        self._search_matches = []
-        self._multi_selected_lines.clear()
-        self._selection_anchor_line = None
+        self._search_state.clear()
+        self._sync_highlight_state()
+        clear_line_selection(self._selection_state)
         self._apply_extra_selections()
         self._suppress_text_change = False
 
@@ -330,21 +329,26 @@ class EditorPanel(QWidget):
 
     def is_modified(self) -> bool:
         """Return whether the editor document has unsaved changes."""
-        return self._text_edit.document().isModified()
+        document = self._text_edit.document()
+        assert document is not None
+        return document.isModified()
 
     def set_modified(self, modified: bool) -> None:
         """Set document modified flag."""
-        self._text_edit.document().setModified(modified)
+        document = self._text_edit.document()
+        assert document is not None
+        document.setModified(modified)
 
     def highlight_line(self, line_number: int) -> None:
         """Scroll to and select the given 1-based line in the editor."""
-        doc = self._text_edit.document()
+        doc = self._document()
         block = doc.findBlockByLineNumber(line_number - 1)
         if not block.isValid():
             return
-        self._multi_selected_lines = {line_number}
-        self._selection_anchor_line = line_number
-        self._selected_line = line_number
+        update_single_line_selection(
+            self._selection_state,
+            line_number,
+        )
         cursor = QTextCursor(block)
         cursor.clearSelection()
         self._suppress_cursor_events = True
@@ -356,14 +360,13 @@ class EditorPanel(QWidget):
     def highlight_lines(self, line_numbers: list[int]) -> None:
         """Highlight a non-contiguous set of 1-based line numbers."""
         if not line_numbers:
-            self._multi_selected_lines.clear()
-            self._selection_anchor_line = None
+            clear_line_selection(self._selection_state)
             self._apply_extra_selections()
             return
         if len(line_numbers) == 1:
             self.highlight_line(line_numbers[0])
             return
-        doc = self._text_edit.document()
+        doc = self._document()
         valid_lines = sorted({ln for ln in line_numbers if ln > 0})
         if not valid_lines:
             return
@@ -371,9 +374,10 @@ class EditorPanel(QWidget):
         first_block = doc.findBlockByLineNumber(first - 1)
         if not first_block.isValid():
             return
-        self._selected_line = first
-        self._multi_selected_lines = set(valid_lines)
-        self._selection_anchor_line = first
+        update_multi_line_selection(
+            self._selection_state,
+            valid_lines,
+        )
         cursor = QTextCursor(first_block)
         cursor.clearSelection()
         self._suppress_cursor_events = True
@@ -386,31 +390,29 @@ class EditorPanel(QWidget):
 
     def _delete_multi_selected_lines(self) -> None:
         """Delete all currently multi-selected lines as full logical blocks."""
-        doc = self._text_edit.document()
-        lines = sorted(self._multi_selected_lines, reverse=True)
+        doc = self._document()
+        lines = sorted(
+            self._selection_state.multi_selected_lines,
+            reverse=True,
+        )
         if not lines:
             return
 
         self._suppress_cursor_events = True
         edit_cursor = self._text_edit.textCursor()
-        edit_cursor.beginEditBlock()
-        for line_number in lines:
-            block = doc.findBlockByLineNumber(line_number - 1)
-            if not block.isValid():
-                continue
-            start = block.position()
-            end = start + block.length()
-            del_cursor = QTextCursor(doc)
-            del_cursor.setPosition(start)
-            del_cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            del_cursor.removeSelectedText()
-        edit_cursor.endEditBlock()
+        with grouped_edit(edit_cursor):
+            for line_number in lines:
+                block = doc.findBlockByLineNumber(line_number - 1)
+                if not block.isValid():
+                    continue
+                start = block.position()
+                end = start + block.length()
+                delete_document_range(doc, start, end)
         self._suppress_cursor_events = False
 
-        self._multi_selected_lines.clear()
-        self._selection_anchor_line = None
-        self._search_scope = None
-        self._search_matches = []
+        clear_line_selection(self._selection_state)
+        self._search_state.clear()
+        self._sync_highlight_state()
         self._apply_extra_selections()
         self.lines_selected.emit([])
 
@@ -429,139 +431,6 @@ class EditorPanel(QWidget):
         self._line_warnings = line_warnings
         self._apply_extra_selections()
 
-    def _update_hover_tooltip(self, event: QMouseEvent) -> None:
-        """Show a context tooltip for the token under the mouse cursor."""
-        cursor = self._text_edit.cursorForPosition(event.position().toPoint())
-        block = cursor.block()
-        if not block.isValid():
-            QToolTip.hideText()
-            return
-
-        line_text = block.text()
-        line_number = block.blockNumber() + 1
-        column = cursor.positionInBlock()
-
-        token_text = self._describe_token_at(line_text, column)
-        warning_text = self._describe_line_warnings(line_number)
-
-        if token_text and warning_text:
-            tooltip = f"{token_text}\n\n{warning_text}"
-        elif token_text:
-            tooltip = token_text
-        elif warning_text:
-            tooltip = warning_text
-        else:
-            QToolTip.hideText()
-            return
-
-        QToolTip.showText(event.globalPosition().toPoint(), tooltip, self._text_edit.viewport())
-
-    def _describe_token_at(self, line_text: str, column: int) -> str | None:
-        """Return a short explanation for the token located at the given column."""
-        if not line_text:
-            return None
-
-        de = self._language != "en"
-
-        semicolon_idx = line_text.find(";")
-        if semicolon_idx >= 0 and column >= semicolon_idx:
-            comment = line_text[semicolon_idx + 1:].strip()
-            comment_text = comment if comment else ("(leer)" if de else "(empty)")
-            label = "Kommentar" if de else "Comment"
-            return f"{label}: {comment_text}"
-
-        for match in _PAREN_COMMENT_RE.finditer(line_text):
-            start, end = match.span()
-            if start <= column < end:
-                comment = match.group(0)[1:-1].strip()
-                comment_text = comment if comment else ("(leer)" if de else "(empty)")
-                label = "Kommentar" if de else "Comment"
-                return f"{label}: {comment_text}"
-
-        for match in _CMD_TOKEN_RE.finditer(line_text):
-            start, end = match.span(1)
-            if start <= column < end:
-                command = match.group(1).upper()
-                description = EXTENDED_COMMAND_DESCRIPTIONS.get(command)
-                cmd_label = "Befehl" if de else "Command"
-                parts: list[str] = []
-                if description:
-                    parts.append(f"{cmd_label} {command}: {description}")
-                else:
-                    parts.append(f"{cmd_label} {command}")
-                # Add dialect support hint when a profile is active
-                if self._profile_id is not None:
-                    try:
-                        profile = get_profile(self._profile_id)
-                        if command in profile.unsupported_commands:
-                            hint = (
-                                f"⚠ Nicht unterstützt durch {profile.name}"
-                                if de else
-                                f"⚠ Not supported by {profile.name}"
-                            )
-                            parts.append(hint)
-                        elif command not in profile.known_commands:
-                            hint = (
-                                f"⚠ Unbekannt für Dialekt {profile.name}"
-                                if de else
-                                f"⚠ Unknown for dialect {profile.name}"
-                            )
-                            parts.append(hint)
-                    except ValueError:
-                        pass
-                return "\n".join(parts)
-
-        for match in _PARAM_TOKEN_RE.finditer(line_text):
-            start, end = match.span(0)
-            if start <= column < end:
-                key = match.group(1).upper()
-                raw_value = match.group(2)
-                return self._format_parameter_tooltip(key, raw_value)
-
-        return None
-
-    def _format_parameter_tooltip(self, key: str, raw_value: str) -> str:
-        """Format tooltip text for a parameter token."""
-        de = self._language != "en"
-        explanations = _PARAM_EXPLANATIONS_DE if de else _PARAM_EXPLANATIONS_EN
-        description = explanations.get(key, f"{key}-Parameter" if de else f"{key} parameter")
-        try:
-            value = float(raw_value)
-        except ValueError:
-            value_text = raw_value
-        else:
-            if key == "F":
-                value_text = f"{value:.2f} " + ("Einheit/min" if de else "units/min")
-            elif key in {"X", "Y", "Z", "I", "J", "A", "B", "C"}:
-                value_text = f"{value:.3f}"
-            else:
-                value_text = f"{value:g}"
-        return f"{description}: {value_text}"
-
-    def _describe_line_warnings(self, line_number: int) -> str | None:
-        """Return analyzer warning/error context for a given line, if available."""
-        warnings = self._line_warnings.get(line_number)
-        if not warnings:
-            return None
-
-        de = self._language != "en"
-        header = "Analysehinweise:" if de else "Analysis notes:"
-        parts: list[str] = [header]
-        for warning in warnings[:3]:
-            parts.append(f"- {warning.severity.name}: {warning.message}")
-            if warning.severity == WarningSeverity.ERROR:
-                reason_label = "Grund" if de else "Reason"
-                parts.append(f"  {reason_label}: {warning.message}")
-            if warning.suggestion:
-                suggestion_label = "Vorschlag" if de else "Suggestion"
-                parts.append(f"  {suggestion_label}: {warning.suggestion}")
-
-        if len(warnings) > 3:
-            more = len(warnings) - 3
-            parts.append(f"- ... {more} weitere Hinweise" if de else f"- ... {more} more notes")
-
-        return "\n".join(parts)
-
     def copy(self) -> None:
         self._text_edit.copy()
 
@@ -569,11 +438,15 @@ class EditorPanel(QWidget):
         """Copy explicit 1-based lines to clipboard and return copied text."""
         if not line_numbers:
             return ""
-        old_selection = set(self._multi_selected_lines)
-        self._multi_selected_lines = {ln for ln in line_numbers if ln > 0}
+        old_selection = set(self._selection_state.multi_selected_lines)
+        self._selection_state.multi_selected_lines = {
+            ln for ln in line_numbers if ln > 0
+        }
         self._copy_multi_selected_lines()
-        copied = QGuiApplication.clipboard().text()
-        self._multi_selected_lines = old_selection
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        copied = clipboard.text()
+        self._selection_state.multi_selected_lines = old_selection
         self._apply_extra_selections()
         return copied
 
@@ -582,8 +455,10 @@ class EditorPanel(QWidget):
         valid = sorted({ln for ln in line_numbers if ln > 0})
         if not valid:
             return 0
-        self._multi_selected_lines = set(valid)
-        self._selection_anchor_line = valid[0]
+        update_multi_line_selection(
+            self._selection_state,
+            valid,
+        )
         self._delete_multi_selected_lines()
         return len(valid)
 
@@ -600,40 +475,35 @@ class EditorPanel(QWidget):
         if not valid or factor <= 0:
             return 0
 
-        doc = self._text_edit.document()
+        doc = self._document()
         feed_re = re.compile(r"(?i)\\bF([+-]?\\d*\\.?\\d+)\\b")
         changed = 0
 
         self._managed_search_edit = True
         self._suppress_cursor_events = True
         edit_cursor = self._text_edit.textCursor()
-        edit_cursor.beginEditBlock()
         try:
-            for line_number in valid:
-                block = doc.findBlockByLineNumber(line_number - 1)
-                if not block.isValid():
-                    continue
+            with grouped_edit(edit_cursor):
+                for line_number in valid:
+                    block = doc.findBlockByLineNumber(line_number - 1)
+                    if not block.isValid():
+                        continue
 
-                original = block.text()
+                    original = block.text()
 
-                def _replace(match: re.Match[str]) -> str:
-                    value = float(match.group(1))
-                    return f"F{value * factor:g}"
+                    def _replace(match: re.Match[str]) -> str:
+                        value = float(match.group(1))
+                        return f"F{value * factor:g}"
 
-                updated = feed_re.sub(_replace, original)
-                if updated == original:
-                    continue
+                    updated = feed_re.sub(_replace, original)
+                    if updated == original:
+                        continue
 
-                changed += 1
-                start = block.position()
-                end = start + len(original)
-                block_cursor = QTextCursor(doc)
-                block_cursor.setPosition(start)
-                block_cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-                block_cursor.removeSelectedText()
-                block_cursor.insertText(updated)
+                    changed += 1
+                    start = block.position()
+                    end = start + len(original)
+                    replace_document_range(doc, start, end, updated)
         finally:
-            edit_cursor.endEditBlock()
             self._suppress_cursor_events = False
             self._managed_search_edit = False
 
@@ -643,13 +513,16 @@ class EditorPanel(QWidget):
         return changed
 
     def _copy_multi_selected_lines(self) -> None:
-        doc = self._text_edit.document()
+        doc = self._document()
         lines_text: list[str] = []
-        for line_number in sorted(self._multi_selected_lines):
+        for line_number in sorted(self._selection_state.multi_selected_lines):
             block = doc.findBlockByLineNumber(line_number - 1)
             if block.isValid():
                 lines_text.append(block.text())
-        QGuiApplication.clipboard().setText("\n".join(lines_text))
+
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        clipboard.setText("\n".join(lines_text))
 
     def paste(self) -> None:
         self._text_edit.paste()
@@ -664,18 +537,18 @@ class EditorPanel(QWidget):
 
     def can_undo(self) -> bool:
         """Return whether undo is available."""
-        return self._text_edit.document().isUndoAvailable()
+        return self._document().isUndoAvailable()
 
     def can_redo(self) -> bool:
         """Return whether redo is available."""
-        return self._text_edit.document().isRedoAvailable()
+        return self._document().isRedoAvailable()
 
     def get_selected_text(self) -> str:
         """Return text of currently selected lines."""
-        if self._multi_selected_lines:
-            doc = self._text_edit.document()
+        if self._selection_state.multi_selected_lines:
+            doc = self._document()
             lines_text: list[str] = []
-            for ln in sorted(self._multi_selected_lines):
+            for ln in sorted(self._selection_state.multi_selected_lines):
                 block = doc.findBlockByLineNumber(ln - 1)
                 if block.isValid():
                     lines_text.append(block.text())
@@ -685,34 +558,21 @@ class EditorPanel(QWidget):
 
     def get_selected_lines(self) -> list[int]:
         """Return currently active selected lines (1-based)."""
-        if self._multi_selected_lines:
-            return sorted(self._multi_selected_lines)
-
-        cursor = self._text_edit.textCursor()
-        if cursor.hasSelection():
-            doc = self._text_edit.document()
-            sel_start = cursor.selectionStart()
-            sel_end = cursor.selectionEnd()
-            start_block = doc.findBlock(sel_start).blockNumber()
-            end_block = doc.findBlock(max(sel_start, sel_end - 1)).blockNumber()
-            return list(range(start_block + 1, end_block + 2))
-
-        return [cursor.blockNumber() + 1]
+        return get_selected_lines(
+            self._document(),
+            self._text_edit.textCursor(),
+            self._selection_state.multi_selected_lines,
+        )
 
     def select_line_range(self, start_line: int, end_line: int) -> None:
         """Create a native text selection from start_line to end_line (1-based)."""
-        if start_line <= 0 or end_line <= 0:
+        cursor = create_line_range_cursor(
+            self._document(),
+            start_line,
+            end_line,
+        )
+        if cursor is None:
             return
-        start_line, end_line = sorted((start_line, end_line))
-        doc = self._text_edit.document()
-        start_block = doc.findBlockByLineNumber(start_line - 1)
-        end_block = doc.findBlockByLineNumber(end_line - 1)
-        if not start_block.isValid() or not end_block.isValid():
-            return
-
-        cursor = self._text_edit.textCursor()
-        cursor.setPosition(start_block.position())
-        cursor.setPosition(end_block.position() + len(end_block.text()), QTextCursor.MoveMode.KeepAnchor)
         self._suppress_cursor_events = True
         self._text_edit.setTextCursor(cursor)
         self._suppress_cursor_events = False
@@ -722,51 +582,68 @@ class EditorPanel(QWidget):
 
     def clear_search_highlights(self) -> None:
         """Clear search-scope and match overlays."""
-        self._search_scope = None
-        self._search_matches = []
+        self._search_state.clear()
         self._apply_extra_selections()
 
     def find_next(self, term: str, use_regex: bool = False, search_in_selection: bool = False, case_sensitive: bool = False) -> bool:
         """Find next occurrence with optional regex support and wrap-around."""
         if not term:
-            self._search_matches = []
+            self._search_state.matches = []
             self._apply_extra_selections()
             return False
+
         cursor = self._text_edit.textCursor()
-        self._update_search_scope(cursor, search_in_selection)
-        self._update_search_matches(term, use_regex, cursor, search_in_selection, case_sensitive)
-        if not self._search_matches:
+        update_search_scope(self._search_state, cursor, search_in_selection)
+        self._update_search_matches(
+            term,
+            use_regex,
+            cursor,
+            search_in_selection,
+            case_sensitive,
+        )
+
+        if not self._search_state.matches:
             return False
 
         anchor = cursor.selectionEnd() if cursor.hasSelection() else cursor.position()
-        match = find_next_match(self._search_matches, anchor)
+        match = find_next_match(self._search_state.matches, anchor)
         if match is None:
             return False
+
         self._select_range(*match)
         return True
 
     def find_previous(self, term: str, use_regex: bool = False, search_in_selection: bool = False, case_sensitive: bool = False) -> bool:
         """Find previous occurrence with optional regex support and wrap-around."""
         if not term:
-            self._search_matches = []
+            self._search_state.matches = []
             self._apply_extra_selections()
             return False
+
         cursor = self._text_edit.textCursor()
-        self._update_search_scope(cursor, search_in_selection)
-        self._update_search_matches(term, use_regex, cursor, search_in_selection, case_sensitive)
-        if not self._search_matches:
+        update_search_scope(self._search_state, cursor, search_in_selection)
+        self._update_search_matches(
+            term,
+            use_regex,
+            cursor,
+            search_in_selection,
+            case_sensitive,
+        )
+
+        if not self._search_state.matches:
             return False
 
         anchor = cursor.selectionStart() if cursor.hasSelection() else cursor.position()
-        match = find_previous_match(self._search_matches, anchor)
+        match = find_previous_match(self._search_state.matches, anchor)
         if match is None:
             return False
+
         self._select_range(*match)
         return True
 
     def get_search_match_count(self) -> int:
         """Return the number of currently cached search matches."""
-        return len(self._search_matches)
+        return len(self._search_state.matches)
 
     def preview_search(
         self,
@@ -777,39 +654,50 @@ class EditorPanel(QWidget):
     ) -> tuple[bool, int]:
         """Incremental search preview: keep match selected and return hit count."""
         cursor = self._text_edit.textCursor()
-        self._update_search_scope(cursor, search_in_selection)
+        update_search_scope(self._search_state, cursor, search_in_selection)
         # When the scope was just locked from the cursor's current selection,
         # that selection (orange QPalette highlight) would cover the green
         # match highlights.  Move the cursor to scope start to make them visible.
         if (
             search_in_selection
-            and self._search_scope is not None
+            and self._search_state.scope is not None
             and cursor.hasSelection()
-            and cursor.selectionStart() == self._search_scope[0]
-            and cursor.selectionEnd() == self._search_scope[1]
+            and cursor.selectionStart() == self._search_state.scope[0]
+            and cursor.selectionEnd() == self._search_state.scope[1]
         ):
-            cleared = QTextCursor(self._text_edit.document())
-            cleared.setPosition(self._search_scope[0])
+            cleared = QTextCursor(self._document())
+            cleared.setPosition(self._search_state.scope[0])
             self._suppress_cursor_events = True
             self._text_edit.setTextCursor(cleared)
             self._suppress_cursor_events = False
             cursor = cleared
 
         if not term:
-            self._search_matches = []
+            self._search_state.matches = []
             self._apply_extra_selections()
             return (False, 0)
 
         content = self.get_content()
-        ranges = self._get_search_ranges(content, cursor, search_in_selection)
+        ranges = get_search_ranges(
+            content,
+            cursor,
+            search_in_selection,
+            self._search_state.scope,
+        )
         if ranges is None:
-            self._search_matches = []
+            self._search_state.matches = []
             self._apply_extra_selections()
             return (False, 0)
 
-        self._search_matches = compute_match_ranges(term, use_regex, content, ranges, case_sensitive)
+        self._search_state.matches = compute_match_ranges(
+            term,
+            use_regex,
+            content,
+            ranges,
+            case_sensitive,
+        )
         self._apply_extra_selections()
-        count = len(self._search_matches)
+        count = len(self._search_state.matches)
         # Do not move the text cursor during incremental preview typing.
         # This keeps the user's current selection/scope intact.
         return (count > 0, count)
@@ -835,12 +723,16 @@ class EditorPanel(QWidget):
         match_end = cursor.selectionEnd()
         self._managed_search_edit = True
         try:
-            cursor.beginEditBlock()
-            cursor.removeSelectedText()
-            cursor.insertText(replacement)
-            cursor.endEditBlock()
+            with grouped_edit(cursor):
+                cursor.removeSelectedText()
+                cursor.insertText(replacement)
             self._text_edit.setTextCursor(cursor)
-            self._shift_scope_after_replace(match_start, match_end, len(replacement))
+            shift_scope_after_replace(
+                self._search_state,
+                match_start,
+                match_end,
+                len(replacement),
+            )
         finally:
             self._managed_search_edit = False
         return True
@@ -867,12 +759,16 @@ class EditorPanel(QWidget):
         match_end = cursor.selectionEnd()
         self._managed_search_edit = True
         try:
-            cursor.beginEditBlock()
-            cursor.removeSelectedText()
-            cursor.insertText(replacement)
-            cursor.endEditBlock()
+            with grouped_edit(cursor):
+                cursor.removeSelectedText()
+                cursor.insertText(replacement)
             self._text_edit.setTextCursor(cursor)
-            self._shift_scope_after_replace(match_start, match_end, len(replacement))
+            shift_scope_after_replace(
+                self._search_state,
+                match_start,
+                match_end,
+                len(replacement),
+            )
         finally:
             self._managed_search_edit = False
         self._move_cursor_to_position(match_start)
@@ -893,8 +789,13 @@ class EditorPanel(QWidget):
         content = self.get_content()
 
         cursor = self._text_edit.textCursor()
-        self._update_search_scope(cursor, search_in_selection)
-        ranges = self._get_search_ranges(content, cursor, search_in_selection)
+        update_search_scope(self._search_state, cursor, search_in_selection)
+        ranges = get_search_ranges(
+            content,
+            cursor,
+            search_in_selection,
+            self._search_state.scope,
+        )
         if ranges is None:
             return 0
 
@@ -913,33 +814,38 @@ class EditorPanel(QWidget):
         prev_cursor = self._text_edit.textCursor()
         prev_anchor = prev_cursor.anchor()
         prev_pos = prev_cursor.position()
-        prev_vscroll = self._text_edit.verticalScrollBar().value()
-        prev_hscroll = self._text_edit.horizontalScrollBar().value()
+        vscroll = self._text_edit.verticalScrollBar()
+        hscroll = self._text_edit.horizontalScrollBar()
+        assert vscroll is not None
+        assert hscroll is not None
+
+        prev_vscroll = vscroll.value()
+        prev_hscroll = hscroll.value()
 
         self._suppress_text_change = True
-        edit_cursor = QTextCursor(self._text_edit.document())
-        edit_cursor.beginEditBlock()
-        edit_cursor.select(QTextCursor.SelectionType.Document)
-        edit_cursor.insertText(new_content)
-        edit_cursor.endEditBlock()
+        edit_cursor = QTextCursor(self._document())
+        with grouped_edit(edit_cursor):
+            edit_cursor.select(QTextCursor.SelectionType.Document)
+            edit_cursor.insertText(new_content)
 
         max_pos = len(new_content)
         restore_pos = max(0, min(prev_pos, max_pos))
-        restore_cursor = self._text_edit.textCursor()
         # Do NOT restore the selection anchor – after content changed, the old
         # selection offsets are wrong and would leave a stale _search_scope that
         # causes double-replacements on the next operation.
-        restore_cursor.setPosition(restore_pos)
         self._suppress_cursor_events = True
-        self._text_edit.setTextCursor(restore_cursor)
+        restore_plain_cursor(self._text_edit, restore_pos)
         self._suppress_cursor_events = False
-        self._text_edit.verticalScrollBar().setValue(prev_vscroll)
-        self._text_edit.horizontalScrollBar().setValue(prev_hscroll)
+        restore_scrollbars(
+            vscroll,
+            hscroll,
+            prev_vscroll,
+            prev_hscroll,
+        )
 
         # Invalidate scope and match cache – positions are meaningless in the
         # new content.  The next interaction will re-establish them.
-        self._search_scope = None
-        self._search_matches = []
+        self._search_state.clear()
         self._apply_extra_selections()
         self._suppress_text_change = False
         return count
@@ -952,7 +858,12 @@ class EditorPanel(QWidget):
         search_in_selection: bool,
     ) -> bool:
         content = self.get_content()
-        bounds = self._get_search_bounds(content, cursor, search_in_selection)
+        bounds = get_search_bounds(
+            content,
+            cursor,
+            search_in_selection,
+            self._search_state.scope,
+        )
         if bounds is None:
             return False
         start_bound, end_bound = bounds
@@ -992,7 +903,12 @@ class EditorPanel(QWidget):
         except re.error:
             return False
 
-        bounds = self._get_search_bounds(content, cursor, search_in_selection)
+        bounds = get_search_bounds(
+            content,
+            cursor,
+            search_in_selection,
+            self._search_state.scope,
+        )
         if bounds is None:
             return False
         start_bound, end_bound = bounds
@@ -1062,12 +978,16 @@ class EditorPanel(QWidget):
         match_end = cursor.selectionEnd()
         self._managed_search_edit = True
         try:
-            cursor.beginEditBlock()
-            cursor.removeSelectedText()
-            cursor.insertText(new_text)
-            cursor.endEditBlock()
+            with grouped_edit(cursor):
+                cursor.removeSelectedText()
+                cursor.insertText(new_text)
             self._text_edit.setTextCursor(cursor)
-            self._shift_scope_after_replace(match_start, match_end, len(new_text))
+            shift_scope_after_replace(
+                self._search_state,
+                match_start,
+                match_end,
+                len(new_text),
+            )
         finally:
             self._managed_search_edit = False
         return True
@@ -1098,12 +1018,16 @@ class EditorPanel(QWidget):
         match_end = cursor.selectionEnd()
         self._managed_search_edit = True
         try:
-            cursor.beginEditBlock()
-            cursor.removeSelectedText()
-            cursor.insertText(new_text)
-            cursor.endEditBlock()
+            with grouped_edit(cursor):
+                cursor.removeSelectedText()
+                cursor.insertText(new_text)
             self._text_edit.setTextCursor(cursor)
-            self._shift_scope_after_replace(match_start, match_end, len(new_text))
+            shift_scope_after_replace(
+                self._search_state,
+                match_start,
+                match_end,
+                len(new_text),
+            )
         finally:
             self._managed_search_edit = False
         self._move_cursor_to_position(match_start)
@@ -1112,10 +1036,8 @@ class EditorPanel(QWidget):
 
     def _move_cursor_to_position(self, position: int) -> None:
         """Move the text cursor to a plain insertion point without selection."""
-        cursor = self._text_edit.textCursor()
-        cursor.setPosition(position)
         self._suppress_cursor_events = True
-        self._text_edit.setTextCursor(cursor)
+        restore_plain_cursor(self._text_edit, position)
         self._suppress_cursor_events = False
 
     def _selection_matches_query(
@@ -1134,89 +1056,6 @@ class EditorPanel(QWidget):
             except re.error:
                 return False
         return selected_text == term
-
-    def _shift_scope_after_replace(
-        self, match_start: int, match_end: int, new_len: int
-    ) -> None:
-        """Adjust _search_scope and _search_matches after a single replacement.
-
-        After replacing text the document length changes by
-        ``new_len - (match_end - match_start)``.  The scope end and every
-        cached match position that lies after the replacement must be shifted
-        by that delta so highlights and subsequent searches stay correct.
-        """
-        delta = new_len - (match_end - match_start)
-
-        # Shift scope end.
-        if self._search_scope is not None:
-            scope_start, scope_end = self._search_scope
-            if match_end <= scope_end:
-                self._search_scope = (scope_start, scope_end + delta)
-
-        # Remove the replaced match and shift all following ones.
-        updated: list[tuple[int, int]] = []
-        for ms, me in self._search_matches:
-            if me <= match_start:
-                # Entirely before the replacement – unchanged.
-                updated.append((ms, me))
-            elif ms >= match_end:
-                # Entirely after the replacement – shift by delta.
-                updated.append((ms + delta, me + delta))
-            # else: this was the replaced match itself – drop it.
-        self._search_matches = updated
-
-    def _get_search_bounds(
-        self,
-        content: str,
-        cursor: QTextCursor,
-        search_in_selection: bool,
-    ) -> tuple[int, int] | None:
-        if not search_in_selection:
-            return (0, len(content))
-        if self._search_scope is not None:
-            return self._search_scope
-        if not cursor.hasSelection():
-            return None
-        return (cursor.selectionStart(), cursor.selectionEnd())
-
-    def _get_search_ranges(
-        self,
-        content: str,
-        cursor: QTextCursor,
-        search_in_selection: bool,
-    ) -> list[tuple[int, int]] | None:
-        """Return search ranges from native text selection or full document."""
-        if not search_in_selection:
-            return [(0, len(content))]
-
-        # Native text selection always wins when searching "in selection".
-        if cursor.hasSelection():
-            return [(cursor.selectionStart(), cursor.selectionEnd())]
-
-        if self._search_scope is not None:
-            return [self._search_scope]
-
-        bounds = self._get_search_bounds(content, cursor, search_in_selection)
-        if bounds is None:
-            return None
-        return [bounds]
-
-    def _update_search_scope(self, cursor: QTextCursor, search_in_selection: bool) -> None:
-        if not search_in_selection:
-            if self._search_scope is not None:
-                self._search_scope = None
-                self._apply_extra_selections(cursor)
-            return
-
-        # Scope already locked from a prior user selection.  Never overwrite
-        # it with a (smaller) match selection placed by find_next/_select_range.
-        # Released only when search_in_selection becomes False.
-        if self._search_scope is not None:
-            return
-
-        if cursor.hasSelection():
-            self._search_scope = (cursor.selectionStart(), cursor.selectionEnd())
-            self._apply_extra_selections(cursor)
 
     def _count_matches(
         self,
@@ -1237,12 +1076,24 @@ class EditorPanel(QWidget):
         case_sensitive: bool = False,
     ) -> None:
         content = self.get_content()
-        ranges = self._get_search_ranges(content, cursor, search_in_selection)
+        ranges = get_search_ranges(
+            content,
+            cursor,
+            search_in_selection,
+            self._search_state.scope,
+        )
         if not term or ranges is None:
-            self._search_matches = []
+            self._search_state.matches = []
             self._apply_extra_selections(cursor)
             return
-        self._search_matches = compute_match_ranges(term, use_regex, content, ranges, case_sensitive)
+
+        self._search_state.matches = compute_match_ranges(
+            term,
+            use_regex,
+            content,
+            ranges,
+            case_sensitive,
+        )
         self._apply_extra_selections(cursor)
 
     def _compute_match_ranges(
@@ -1256,14 +1107,18 @@ class EditorPanel(QWidget):
         return compute_match_ranges(term, use_regex, content, ranges, case_sensitive)
 
     def _select_range(self, start: int, end: int) -> None:
-        new_cursor = self._text_edit.textCursor()
-        new_cursor.setPosition(start)
-        new_cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        new_cursor = create_range_cursor(
+            self._document(),
+            start,
+            end,
+        )
         self._suppress_cursor_events = True
         self._text_edit.setTextCursor(new_cursor)
         self._suppress_cursor_events = False
         self._capture_locked_selection(new_cursor)
-        self._selected_line = new_cursor.blockNumber() + 1
+        self._selection_state.selected_line = (
+            new_cursor.blockNumber() + 1
+        )
         self._apply_extra_selections(new_cursor)
 
     def _on_cursor_moved(self) -> None:
@@ -1275,11 +1130,15 @@ class EditorPanel(QWidget):
             return
         cursor = self._text_edit.textCursor()
         line_number = cursor.blockNumber() + 1
-        self._selected_line = line_number
+        self._selection_state.selected_line = line_number
 
         self._apply_extra_selections(cursor)
         self.line_selected.emit(line_number)
-        selected_lines = sorted(self._multi_selected_lines) if self._multi_selected_lines else [line_number]
+        selected_lines = (
+            sorted(self._selection_state.multi_selected_lines)
+            if self._selection_state.multi_selected_lines
+            else [line_number]
+        )
         self.lines_selected.emit(selected_lines)
 
     def _on_text_changed(self) -> None:
@@ -1296,78 +1155,28 @@ class EditorPanel(QWidget):
         the managed search-replace path, so cached absolute match offsets are no
         longer trustworthy after such edits.
         """
-        self._search_scope = None
-        self._search_matches = []
+        self._search_state.clear()
         self._apply_extra_selections()
+
+    def _sync_highlight_state(self) -> None:
+        """Synchronize overlay rendering state from search state."""
+        self._highlight_state.search_scope = self._search_state.scope
+        self._highlight_state.search_matches = list(
+            self._search_state.matches,
+        )
 
     def _apply_extra_selections(self, cursor: QTextCursor | None = None) -> None:
         """Apply warning-line and current-line overlays."""
         if cursor is None:
             cursor = self._text_edit.textCursor()
 
-        selections: list[QTextEdit.ExtraSelection] = []
+        self._sync_highlight_state()
 
-        doc = self._text_edit.document()
-        for line_number, severity in self._warning_severity.items():
-            block = doc.findBlockByLineNumber(line_number - 1)
-            if not block.isValid():
-                continue
-            warning_selection = QTextEdit.ExtraSelection()
-            warning_selection.cursor = QTextCursor(block)
-            warning_selection.cursor.clearSelection()
-            warning_selection.format.setBackground(QColor(_SEVERITY_COLORS[severity]))
-            warning_selection.format.setProperty(
-                QTextFormat.Property.FullWidthSelection,
-                True,
-            )
-            selections.append(warning_selection)
-
-        if self._multi_selected_lines:
-            for line_number in sorted(self._multi_selected_lines):
-                block = doc.findBlockByLineNumber(line_number - 1)
-                if not block.isValid():
-                    continue
-                multi_selection = QTextEdit.ExtraSelection()
-                multi_selection.cursor = QTextCursor(block)
-                multi_selection.cursor.clearSelection()
-                multi_selection.format.setBackground(QColor(_MULTI_LINE_SELECTION_COLOR))
-                multi_selection.format.setProperty(
-                    QTextFormat.Property.FullWidthSelection,
-                    True,
-                )
-                selections.append(multi_selection)
-
-        # Only show the current-line (blue) indicator when the cursor is on a
-        # line that is NOT already highlighted as a multi-selection (yellow).
-        # This makes the yellow selection clearly visible for every selected line,
-        # including after plain Arrow-key navigation.
-        cursor_line = cursor.blockNumber() + 1
-        if cursor_line not in self._multi_selected_lines:
-            selection = QTextEdit.ExtraSelection()
-            selection.cursor = QTextCursor(cursor)
-            selection.cursor.clearSelection()
-            selection.format.setBackground(QColor(_CURRENT_LINE_COLOR))
-            selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-            selections.append(selection)
-
-        # Render search scope and matches last so they stay visible above line overlays.
-        if self._search_scope is not None:
-            scope_start, scope_end = self._search_scope
-            scope_selection = QTextEdit.ExtraSelection()
-            scope_cursor = QTextCursor(self._text_edit.document())
-            scope_cursor.setPosition(scope_start)
-            scope_cursor.setPosition(scope_end, QTextCursor.MoveMode.KeepAnchor)
-            scope_selection.cursor = scope_cursor
-            scope_selection.format.setBackground(QColor(_SEARCH_SCOPE_COLOR))
-            selections.append(scope_selection)
-
-        for match_start, match_end in self._search_matches:
-            match_selection = QTextEdit.ExtraSelection()
-            match_cursor = QTextCursor(self._text_edit.document())
-            match_cursor.setPosition(match_start)
-            match_cursor.setPosition(match_end, QTextCursor.MoveMode.KeepAnchor)
-            match_selection.cursor = match_cursor
-            match_selection.format.setBackground(QColor(_SEARCH_MATCH_COLOR))
-            selections.append(match_selection)
-
-        self._text_edit.setExtraSelections(selections)
+        apply_editor_overlay_selections(
+            self._text_edit,
+            self._document(),
+            cursor,
+            self._warning_severity,
+            self._selection_state.multi_selected_lines,
+            self._highlight_state,
+        )
