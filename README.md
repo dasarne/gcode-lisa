@@ -43,24 +43,15 @@
 
 ## Downloads
 
-Prebuilt application bundles for:
-- Linux
-- Windows
-- macOS
+Official downloadable builds are available on the GitHub Releases page:
 
-are available in the GitHub Actions artifacts.
+https://github.com/dasarne/gcode-lisa/releases
 
-Open:
-```text
-GitHub → Actions → Build
-```
+Linux, Windows, and macOS packages are attached directly to each release.
 
-and download the latest successful build artifact for your platform.
+Development and nightly CI artifacts are additionally available here:
 
-Current artifact names:
-- `gcode-lisa-ubuntu-latest`
-- `gcode-lisa-windows-latest`
-- `gcode-lisa-macos-latest`
+https://github.com/dasarne/gcode-lisa/actions/workflows/build.yml
 
 ## Quick Start
 
