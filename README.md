@@ -41,6 +41,27 @@
 | Numerics  | numpy |
 | Testing   | pytest |
 
+## Downloads
+
+Prebuilt application bundles for:
+- Linux
+- Windows
+- macOS
+
+are available in the GitHub Actions artifacts.
+
+Open:
+```text
+GitHub → Actions → Build
+```
+
+and download the latest successful build artifact for your platform.
+
+Current artifact names:
+- `gcode-lisa-ubuntu-latest`
+- `gcode-lisa-windows-latest`
+- `gcode-lisa-macos-latest`
+
 ## Quick Start
 
 ```bash
