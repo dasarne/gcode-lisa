@@ -12,8 +12,18 @@ requires-python = ">=3.10"
 dependencies = [
     "PyQt6>=6.4.0",
     "numpy>=1.24.0",
-    "matplotlib>=3.7.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "black>=24.0.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+gcode-lisa = "src.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

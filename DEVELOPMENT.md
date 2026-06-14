@@ -8,15 +8,16 @@
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/dasarne/grbl-visualizer.git gcode-lisa
+git clone https://github.com/dasarne/gcode-lisa.git gcode-lisa
 cd gcode-lisa
 
 # 2. Create a virtual environment (pyenv recommended)
 python3 -m venv .venv
 source .venv/bin/activate   # on Windows: .venv\Scripts\activate
 
-# 3. Install all dependencies
+# 3. Install runtime + development dependencies
 pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 ## Running Tests
@@ -66,6 +67,7 @@ Undo integration:
 - **flake8** CI gate focuses on high-signal runtime errors (`E9,F63,F7,F82`)
 - A stricter local flake8 run can still be used for style cleanup
 - **mypy** is used for static type checking
+- **pytest** and **pytest-cov** are used for automated testing and coverage reporting
 
 ```bash
 # Format code

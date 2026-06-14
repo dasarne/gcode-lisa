@@ -44,7 +44,7 @@
 ## Quick Start
 
 ```bash
-git clone https://github.com/dasarne/grbl-visualizer.git gcode-lisa
+git clone https://github.com/dasarne/gcode-lisa.git gcode-lisa
 cd gcode-lisa
 
 # Create and activate a virtual environment (required on Arch Linux and
