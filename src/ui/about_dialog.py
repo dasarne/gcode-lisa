@@ -1,9 +1,9 @@
 """About dialog for GCode Lisa."""
 
-from pathlib import Path
-
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QPixmap
+
+from ..runtime_paths import asset_path
 from .resources import get_strings
 from PyQt6.QtWidgets import (
 	QDialog,
@@ -54,7 +54,7 @@ class AboutDialog(QDialog):
 
 		logo = QLabel()
 		logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-		logo_path = Path(__file__).resolve().parents[2] / "assets" / "Lisa.svg"
+		logo_path = asset_path("Lisa.svg")
 		pixmap = QPixmap(str(logo_path))
 		if not pixmap.isNull():
 			logo.setPixmap(

@@ -20,6 +20,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "black>=24.0.0",
     "mypy>=1.0.0",
+    "pyinstaller>=6.0.0",
 ]
 
 [project.scripts]

@@ -23,7 +23,6 @@ X goes to the right, Y recedes to the upper-right at 30°, Z goes up.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from dataclasses import dataclass
 
 from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF, QTimer, pyqtSignal
@@ -35,6 +34,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ..analyzer.analyzer import AnalysisWarning, WarningSeverity
 from ..geometry.path import PathType, ToolPath
+from ..runtime_paths import asset_path
 from .view_math import (
     axis_tick_steps,
     nice_integer_step,
@@ -222,9 +222,8 @@ class _IsometricViewport(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
         self._empty_logo = QPixmap()
-        assets_dir = Path(__file__).resolve().parents[2] / "assets"
         for name in ("Liza_gray.svg", "Lisa_gray.svg"):
-            candidate = assets_dir / name
+            candidate = asset_path(name)
             if candidate.exists():
                 self._empty_logo = QPixmap(str(candidate))
                 break
@@ -586,7 +585,7 @@ class _IsometricViewport(QWidget):
         # Layer 1: grid.
         if self._grid_lines:
             p.setPen(_PEN_GRID)
-            p.drawLines(self._grid_lines)
+            p.drawLines(*self._grid_lines)
 
         # Layer 2: workpiece surface.
         if self._wp_poly is not None:
@@ -618,10 +617,10 @@ class _IsometricViewport(QWidget):
 
         if rapid:
             p.setPen(_PEN_RAPID)
-            p.drawLines(rapid)
+            p.drawLines(*rapid)
         if cut:
             p.setPen(_PEN_CUT)
-            p.drawLines(cut)
+            p.drawLines(*cut)
         if hi_cut or hi_rapid:
             # Animated: fade from base colour → highlight red, width 1.5 → 3.0.
             t = self._anim_phase
@@ -636,7 +635,7 @@ class _IsometricViewport(QWidget):
                     int(base.blue()  + (hb - base.blue())  * t_s),
                 )
                 p.setPen(_cosmetic_pen(c, width))
-                p.drawLines(hi_cut)
+                p.drawLines(*hi_cut)
             if hi_rapid:
                 base = _RAPID_COLOR
                 c = QColor(
@@ -645,7 +644,7 @@ class _IsometricViewport(QWidget):
                     int(base.blue()  + (hb - base.blue())  * t_s),
                 )
                 p.setPen(_cosmetic_pen(c, width))
-                p.drawLines(hi_rapid)
+                p.drawLines(*hi_rapid)
 
         p.restore()
 

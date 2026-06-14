@@ -1,12 +1,12 @@
 """Main entry point for the GCode Lisa application."""
 
 import sys
-from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 
-from .ui.main_window import MainWindow
+from src.runtime_paths import asset_path
+from src.ui.main_window import MainWindow
 
 
 def main() -> None:
@@ -16,7 +16,7 @@ def main() -> None:
     app.setApplicationVersion("1.0.0")
     startup_path = sys.argv[1] if len(sys.argv) > 1 else None
 
-    logo_path = Path(__file__).resolve().parents[1] / "assets" / "Lisa.svg"
+    logo_path = asset_path("Lisa.svg")
     if logo_path.exists():
         icon = QIcon(str(logo_path))
         app.setWindowIcon(icon)
