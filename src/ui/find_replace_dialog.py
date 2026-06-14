@@ -29,7 +29,6 @@ class FindReplaceDialog(QDialog):
     def __init__(self, parent=None, language: str = "en"):
         super().__init__(parent)
         self._language = language
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self.setModal(False)
         self.setMinimumWidth(500)
         self._setup_ui()
@@ -112,6 +111,14 @@ class FindReplaceDialog(QDialog):
         self._status_label.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(self._status_label)
 
+        # Done/close row
+        done_layout = QHBoxLayout()
+        done_layout.addStretch()
+        self._done_btn = QPushButton("")
+        self._done_btn.clicked.connect(self.close)
+        done_layout.addWidget(self._done_btn)
+        layout.addLayout(done_layout)
+
         layout.addStretch()
 
     def _apply_language(self) -> None:
@@ -130,6 +137,7 @@ class FindReplaceDialog(QDialog):
         self._case_check.setText(strings["case_sensitive"])
         self._find_input.setPlaceholderText(strings["find_placeholder"])
         self._replace_input.setPlaceholderText(strings["replace_placeholder"])
+        self._done_btn.setText("Fertig" if self._language != "en" else "Done")
 
     def set_language(self, language: str) -> None:
         """Update dialog language."""
@@ -251,6 +259,19 @@ class FindReplaceDialog(QDialog):
     def set_status(self, message: str) -> None:
         """Update status label."""
         self._status_label.setText(message)
+
+    def get_search_params(self) -> tuple[str, bool, bool, bool]:
+        """Return current search term and option flags."""
+        return (
+            self._find_input.text(),
+            self._regex_check.isChecked(),
+            self._selection_check.isChecked(),
+            self._case_check.isChecked(),
+        )
+
+    def set_search_in_selection(self, enabled: bool) -> None:
+        """Programmatically enable/disable the In Selection option."""
+        self._selection_check.setChecked(enabled)
 
     def keyPressEvent(self, event) -> None:
         """Handle Escape to close dialog."""

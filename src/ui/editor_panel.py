@@ -186,14 +186,8 @@ class EditorPanel(QWidget):
         self._search_matches: list[tuple[int, int]] = []
         self._multi_selected_lines: set[int] = set()
         self._selection_anchor_line: int | None = None
-        self._mouse_drag_active = False
-        self._mouse_drag_mode: str | None = None
-        self._mouse_drag_anchor_line: int | None = None
-        self._mouse_drag_base_selection: set[int] = set()
-        # Stores the key modifiers from the most recent navigation keypress so
-        # _on_cursor_moved can react correctly.  None = cursor was NOT moved by
-        # a navigation key (e.g. moved by a mouse event that we later released).
-        self._key_nav_mods: Qt.KeyboardModifier | None = None
+        self._interaction_lock = False
+        self._locked_selection: tuple[int, int] | None = None
         self._suppress_cursor_events = False
         self._suppress_text_change = False
         self._managed_search_edit = False
@@ -221,13 +215,14 @@ class EditorPanel(QWidget):
         doc = self._text_edit.document()
         doc.setUndoRedoEnabled(True)
         self._syntax = _GCodeSyntaxHighlighter(doc)
-        # Selection highlight colour – same warm yellow as the canvas multi-selection.
+        # Keep native text selection behavior but with a softer background so
+        # syntax highlighting remains visually easier to read.
         palette = self._text_edit.palette()
-        hl_color = QColor(_MULTI_LINE_SELECTION_COLOR)
-        palette.setColor(QPalette.ColorGroup.Active,   QPalette.ColorRole.Highlight, hl_color)
-        palette.setColor(QPalette.ColorGroup.Active,   QPalette.ColorRole.HighlightedText, QColor("#000000"))
-        palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, hl_color)
-        palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText, QColor("#000000"))
+        soft_selection = QColor("#DCEBFF")
+        palette.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight, soft_selection)
+        palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, soft_selection)
+        palette.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText, QColor("#111111"))
+        palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText, QColor("#111111"))
         self._text_edit.setPalette(palette)
         self._text_edit.viewport().setMouseTracking(True)
 
@@ -238,25 +233,30 @@ class EditorPanel(QWidget):
         layout.addWidget(self._text_edit)
 
     def eventFilter(self, obj, event) -> bool:
-        """Handle keyboard and mouse events for unified line-level multi-select."""
-        if (
-            obj is self._text_edit.viewport()
-            and event.type() == QEvent.Type.MouseButtonDblClick
-            and isinstance(event, QMouseEvent)
-            and event.button() == Qt.MouseButton.LeftButton
-        ):
-            # Treat double-click like a normal single-line select.
-            cursor = self._text_edit.cursorForPosition(event.position().toPoint())
-            line_number = cursor.blockNumber() + 1
-            self._multi_selected_lines = {line_number}
-            self._selection_anchor_line = line_number
-            self._mouse_drag_active = False
-            self._suppress_cursor_events = True
-            self._text_edit.setTextCursor(cursor)
-            self._suppress_cursor_events = False
-            self._apply_extra_selections(cursor)
-            self.lines_selected.emit(sorted(self._multi_selected_lines))
-            return True
+        """Handle hover tooltips without overriding native editor selection."""
+        if self._interaction_lock and obj in (self._text_edit, self._text_edit.viewport()):
+            if event.type() in {
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonRelease,
+                QEvent.Type.MouseButtonDblClick,
+            }:
+                return True
+
+            if event.type() == QEvent.Type.KeyPress:
+                if not isinstance(event, QKeyEvent):
+                    return True
+                mods = event.modifiers()
+                ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+                shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+                key = event.key()
+
+                # Keep undo/redo available while interaction lock is active.
+                allow_undo = ctrl and not shift and key in {Qt.Key.Key_Z, Qt.Key.Key_Y}
+                allow_redo_alt = ctrl and shift and key == Qt.Key.Key_Z
+                if allow_undo or allow_redo_alt:
+                    return False
+
+                return True
 
         if (
             obj is self._text_edit.viewport()
@@ -264,165 +264,51 @@ class EditorPanel(QWidget):
             and isinstance(event, QMouseEvent)
         ):
             self._update_hover_tooltip(event)
-            # Drag: extend range selection while left button is held.
-            if bool(event.buttons() & Qt.MouseButton.LeftButton) and self._mouse_drag_active:
-                cursor = self._text_edit.cursorForPosition(event.position().toPoint())
-                line_number = cursor.blockNumber() + 1
-
-                anchor = self._mouse_drag_anchor_line if self._mouse_drag_anchor_line is not None else line_number
-                lo = min(anchor, line_number)
-                hi = max(anchor, line_number)
-                dragged_range = set(range(lo, hi + 1))
-
-                if self._mouse_drag_mode == "ctrl":
-                    # Ctrl+drag adds a contiguous range to the selection.
-                    self._multi_selected_lines = self._mouse_drag_base_selection | dragged_range
-                else:
-                    self._multi_selected_lines = dragged_range
-
-                self._suppress_cursor_events = True
-                self._text_edit.setTextCursor(cursor)
-                self._suppress_cursor_events = False
-                self._apply_extra_selections(cursor)
-                self.lines_selected.emit(sorted(self._multi_selected_lines))
-                return True
             return False
 
         if obj is self._text_edit.viewport() and event.type() == QEvent.Type.Leave:
             QToolTip.hideText()
             return False
 
-        # Intercept ALL left-click presses – convert to line-level multi-select.
-        if (
-            obj is self._text_edit.viewport()
-            and event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(event, QMouseEvent)
-            and event.button() == Qt.MouseButton.LeftButton
-        ):
-            cursor = self._text_edit.cursorForPosition(event.position().toPoint())
-            line_number = cursor.blockNumber() + 1
-            mods = event.modifiers()
-            ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
-            shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-
-            self._mouse_drag_active = True
-            self._mouse_drag_anchor_line = line_number
-            self._mouse_drag_base_selection = set(self._multi_selected_lines)
-
-            if ctrl:
-                # Ctrl+Click: toggle the clicked line.
-                self._mouse_drag_mode = "ctrl"
-                if line_number in self._multi_selected_lines:
-                    self._multi_selected_lines.discard(line_number)
-                else:
-                    self._multi_selected_lines.add(line_number)
-                    self._selection_anchor_line = line_number
-            elif shift and self._selection_anchor_line is not None:
-                # Shift+Click: range-extend from anchor to clicked line.
-                self._mouse_drag_mode = "shift"
-                start = min(self._selection_anchor_line, line_number)
-                end = max(self._selection_anchor_line, line_number)
-                self._multi_selected_lines = set(range(start, end + 1))
-            else:
-                # Plain click: if the line is already selected keep the whole
-                # multi-selection intact (avoids accidental deselect on tremor).
-                # Only reset when clicking on a line that is NOT selected.
-                self._mouse_drag_mode = "plain"
-                if line_number not in self._multi_selected_lines:
-                    self._multi_selected_lines = {line_number}
-                    self._selection_anchor_line = line_number
-
-            self._suppress_cursor_events = True
-            self._text_edit.setTextCursor(cursor)
-            self._suppress_cursor_events = False
-            self._apply_extra_selections(cursor)
-            self.lines_selected.emit(sorted(self._multi_selected_lines))
-            return True  # block native character-level selection
-
-        if (
-            obj is self._text_edit.viewport()
-            and event.type() == QEvent.Type.MouseButtonRelease
-            and isinstance(event, QMouseEvent)
-            and event.button() == Qt.MouseButton.LeftButton
-        ):
-            self._mouse_drag_active = False
-            self._mouse_drag_mode = None
-            self._mouse_drag_anchor_line = None
-            self._mouse_drag_base_selection = set()
-            # Return False so Qt can deliver the MouseButtonDblClick event that
-            # follows a double-click (consuming Release blocks DblClick delivery).
-            return False
-
-        # Navigation keys (Arrow / Home / End / Page): record the modifier state
-        # so _on_cursor_moved can apply the right selection logic, then let
-        # native Qt move the cursor (return False).
-        if (
-            obj in (self._text_edit, self._text_edit.viewport())
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and event.key() in {
-                Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down,
-                Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
-            }
-        ):
-            self._key_nav_mods = event.modifiers()
-            return False  # let native handle → _on_cursor_moved fires
-
-        # Ctrl+A: select all lines.
-        if (
-            obj in (self._text_edit, self._text_edit.viewport())
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and event.key() == Qt.Key.Key_A
-            and bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        ):
-            doc = self._text_edit.document()
-            total = doc.blockCount()
-            self._multi_selected_lines = set(range(1, total + 1))
-            self._selection_anchor_line = 1
-            self._apply_extra_selections()
-            self.lines_selected.emit(sorted(self._multi_selected_lines))
-            return True
-
-        if (
-            obj in (self._text_edit, self._text_edit.viewport())
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and len(self._multi_selected_lines) > 1
-        ):
-            key = event.key()
-            mods = event.modifiers()
-
-            if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-                self._delete_multi_selected_lines()
-                return True
-
-            if bool(mods & Qt.KeyboardModifier.ControlModifier):
-                if key == Qt.Key.Key_C:
-                    self._copy_multi_selected_lines()
-                    return True
-                if key == Qt.Key.Key_X:
-                    self._copy_multi_selected_lines()
-                    self._delete_multi_selected_lines()
-                    return True
-
-            # Printable character → replace selected lines with that character.
-            text = event.text()
-            if text and text.isprintable() and not bool(mods & Qt.KeyboardModifier.ControlModifier):
-                first_line = min(self._multi_selected_lines)
-                self._delete_multi_selected_lines()
-                doc = self._text_edit.document()
-                block = doc.findBlockByLineNumber(max(0, first_line - 1))
-                insert_cursor = self._text_edit.textCursor()
-                if block.isValid():
-                    insert_cursor.setPosition(block.position())
-                self._suppress_cursor_events = True
-                self._text_edit.setTextCursor(insert_cursor)
-                self._suppress_cursor_events = False
-                self._text_edit.insertPlainText(text)
-                return True
-
         return super().eventFilter(obj, event)
+
+    def set_interaction_lock(self, locked: bool) -> None:
+        """Lock manual source edits/selection changes while keeping undo/redo available."""
+        self._interaction_lock = locked
+        if not locked:
+            self._locked_selection = None
+            return
+
+        cursor = self._text_edit.textCursor()
+        if cursor.hasSelection():
+            self._locked_selection = (cursor.selectionStart(), cursor.selectionEnd())
+        else:
+            pos = cursor.position()
+            self._locked_selection = (pos, pos)
+
+    def _capture_locked_selection(self, cursor: QTextCursor) -> None:
+        if not self._interaction_lock:
+            return
+        if cursor.hasSelection():
+            self._locked_selection = (cursor.selectionStart(), cursor.selectionEnd())
+        else:
+            pos = cursor.position()
+            self._locked_selection = (pos, pos)
+
+    def _restore_locked_selection(self) -> None:
+        if not self._interaction_lock or self._locked_selection is None:
+            return
+        start, end = self._locked_selection
+        doc_len = len(self._text_edit.toPlainText())
+        start = max(0, min(start, doc_len))
+        end = max(0, min(end, doc_len))
+
+        cursor = self._text_edit.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self._suppress_cursor_events = True
+        self._text_edit.setTextCursor(cursor)
+        self._suppress_cursor_events = False
 
     def load_content(self, content: str) -> None:
         """Load G-Code text into the editor."""
@@ -677,10 +563,84 @@ class EditorPanel(QWidget):
         return "\n".join(parts)
 
     def copy(self) -> None:
-        if self._multi_selected_lines:
-            self._copy_multi_selected_lines()
-        else:
-            self._text_edit.copy()
+        self._text_edit.copy()
+
+    def copy_lines(self, line_numbers: list[int]) -> str:
+        """Copy explicit 1-based lines to clipboard and return copied text."""
+        if not line_numbers:
+            return ""
+        old_selection = set(self._multi_selected_lines)
+        self._multi_selected_lines = {ln for ln in line_numbers if ln > 0}
+        self._copy_multi_selected_lines()
+        copied = QGuiApplication.clipboard().text()
+        self._multi_selected_lines = old_selection
+        self._apply_extra_selections()
+        return copied
+
+    def delete_lines(self, line_numbers: list[int]) -> int:
+        """Delete explicit 1-based lines and return deleted line count."""
+        valid = sorted({ln for ln in line_numbers if ln > 0})
+        if not valid:
+            return 0
+        self._multi_selected_lines = set(valid)
+        self._selection_anchor_line = valid[0]
+        self._delete_multi_selected_lines()
+        return len(valid)
+
+    def cut_lines(self, line_numbers: list[int]) -> int:
+        """Copy explicit lines to clipboard and delete them."""
+        copied = self.copy_lines(line_numbers)
+        if not copied:
+            return 0
+        return self.delete_lines(line_numbers)
+
+    def scale_feedrate_lines(self, line_numbers: list[int], factor: float) -> int:
+        """Scale F parameters on explicit 1-based lines; return changed line count."""
+        valid = sorted({ln for ln in line_numbers if ln > 0})
+        if not valid or factor <= 0:
+            return 0
+
+        doc = self._text_edit.document()
+        feed_re = re.compile(r"(?i)\\bF([+-]?\\d*\\.?\\d+)\\b")
+        changed = 0
+
+        self._managed_search_edit = True
+        self._suppress_cursor_events = True
+        edit_cursor = self._text_edit.textCursor()
+        edit_cursor.beginEditBlock()
+        try:
+            for line_number in valid:
+                block = doc.findBlockByLineNumber(line_number - 1)
+                if not block.isValid():
+                    continue
+
+                original = block.text()
+
+                def _replace(match: re.Match[str]) -> str:
+                    value = float(match.group(1))
+                    return f"F{value * factor:g}"
+
+                updated = feed_re.sub(_replace, original)
+                if updated == original:
+                    continue
+
+                changed += 1
+                start = block.position()
+                end = start + len(original)
+                block_cursor = QTextCursor(doc)
+                block_cursor.setPosition(start)
+                block_cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                block_cursor.removeSelectedText()
+                block_cursor.insertText(updated)
+        finally:
+            edit_cursor.endEditBlock()
+            self._suppress_cursor_events = False
+            self._managed_search_edit = False
+
+        if changed > 0:
+            self._invalidate_search_state()
+
+        return changed
 
     def _copy_multi_selected_lines(self) -> None:
         doc = self._text_edit.document()
@@ -738,6 +698,27 @@ class EditorPanel(QWidget):
             return list(range(start_block + 1, end_block + 2))
 
         return [cursor.blockNumber() + 1]
+
+    def select_line_range(self, start_line: int, end_line: int) -> None:
+        """Create a native text selection from start_line to end_line (1-based)."""
+        if start_line <= 0 or end_line <= 0:
+            return
+        start_line, end_line = sorted((start_line, end_line))
+        doc = self._text_edit.document()
+        start_block = doc.findBlockByLineNumber(start_line - 1)
+        end_block = doc.findBlockByLineNumber(end_line - 1)
+        if not start_block.isValid() or not end_block.isValid():
+            return
+
+        cursor = self._text_edit.textCursor()
+        cursor.setPosition(start_block.position())
+        cursor.setPosition(end_block.position() + len(end_block.text()), QTextCursor.MoveMode.KeepAnchor)
+        self._suppress_cursor_events = True
+        self._text_edit.setTextCursor(cursor)
+        self._suppress_cursor_events = False
+        self._capture_locked_selection(cursor)
+        self._selected_line = cursor.blockNumber() + 1
+        self._apply_extra_selections(cursor)
 
     def clear_search_highlights(self) -> None:
         """Clear search-scope and match overlays."""
@@ -1204,21 +1185,16 @@ class EditorPanel(QWidget):
         cursor: QTextCursor,
         search_in_selection: bool,
     ) -> list[tuple[int, int]] | None:
-        """Return search ranges; supports non-contiguous multi-line selections."""
+        """Return search ranges from native text selection or full document."""
         if not search_in_selection:
             return [(0, len(content))]
 
-        if self._multi_selected_lines:
-            doc = self._text_edit.document()
-            ranges: list[tuple[int, int]] = []
-            for line_number in sorted(self._multi_selected_lines):
-                block = doc.findBlockByLineNumber(line_number - 1)
-                if not block.isValid():
-                    continue
-                start = block.position()
-                end = start + block.length()
-                ranges.append((start, end))
-            return ranges if ranges else None
+        # Native text selection always wins when searching "in selection".
+        if cursor.hasSelection():
+            return [(cursor.selectionStart(), cursor.selectionEnd())]
+
+        if self._search_scope is not None:
+            return [self._search_scope]
 
         bounds = self._get_search_bounds(content, cursor, search_in_selection)
         if bounds is None:
@@ -1227,12 +1203,6 @@ class EditorPanel(QWidget):
 
     def _update_search_scope(self, cursor: QTextCursor, search_in_selection: bool) -> None:
         if not search_in_selection:
-            if self._search_scope is not None:
-                self._search_scope = None
-                self._apply_extra_selections(cursor)
-            return
-
-        if self._multi_selected_lines:
             if self._search_scope is not None:
                 self._search_scope = None
                 self._apply_extra_selections(cursor)
@@ -1292,6 +1262,7 @@ class EditorPanel(QWidget):
         self._suppress_cursor_events = True
         self._text_edit.setTextCursor(new_cursor)
         self._suppress_cursor_events = False
+        self._capture_locked_selection(new_cursor)
         self._selected_line = new_cursor.blockNumber() + 1
         self._apply_extra_selections(new_cursor)
 
@@ -1299,43 +1270,17 @@ class EditorPanel(QWidget):
         """Emit the current 1-based line number whenever the cursor moves."""
         if self._suppress_cursor_events:
             return
+        if self._interaction_lock:
+            self._restore_locked_selection()
+            return
         cursor = self._text_edit.textCursor()
         line_number = cursor.blockNumber() + 1
         self._selected_line = line_number
 
-        if self._key_nav_mods is None:
-            # Cursor moved for a non-keyboard reason (e.g. mouse Release that we
-            # returned False from).  Keep the existing selection, just refresh visuals.
-            self._apply_extra_selections(cursor)
-            self.line_selected.emit(line_number)
-            self.lines_selected.emit(sorted(self._multi_selected_lines))
-            return
-
-        # Consume the pending flag – this is a keyboard-navigation move.
-        mods = self._key_nav_mods
-        self._key_nav_mods = None
-
-        if bool(mods & Qt.KeyboardModifier.ShiftModifier) and self._selection_anchor_line is not None:
-            # Shift+Arrow: extend range from anchor to cursor line.
-            start = min(self._selection_anchor_line, line_number)
-            end = max(self._selection_anchor_line, line_number)
-            self._multi_selected_lines = set(range(start, end + 1))
-        else:
-            # Plain Arrow: move single-line selection to cursor line, reset anchor.
-            self._multi_selected_lines = {line_number}
-            self._selection_anchor_line = line_number
-
-        # Clear any native text selection – we use _multi_selected_lines for all visuals.
-        if cursor.hasSelection():
-            bare = QTextCursor(cursor)
-            bare.clearSelection()
-            self._suppress_cursor_events = True
-            self._text_edit.setTextCursor(bare)
-            self._suppress_cursor_events = False
-
         self._apply_extra_selections(cursor)
         self.line_selected.emit(line_number)
-        self.lines_selected.emit(sorted(self._multi_selected_lines))
+        selected_lines = sorted(self._multi_selected_lines) if self._multi_selected_lines else [line_number]
+        self.lines_selected.emit(selected_lines)
 
     def _on_text_changed(self) -> None:
         if self._suppress_text_change:
@@ -1361,25 +1306,6 @@ class EditorPanel(QWidget):
             cursor = self._text_edit.textCursor()
 
         selections: list[QTextEdit.ExtraSelection] = []
-
-        if self._search_scope is not None:
-            scope_start, scope_end = self._search_scope
-            scope_selection = QTextEdit.ExtraSelection()
-            scope_cursor = QTextCursor(self._text_edit.document())
-            scope_cursor.setPosition(scope_start)
-            scope_cursor.setPosition(scope_end, QTextCursor.MoveMode.KeepAnchor)
-            scope_selection.cursor = scope_cursor
-            scope_selection.format.setBackground(QColor(_SEARCH_SCOPE_COLOR))
-            selections.append(scope_selection)
-
-        for match_start, match_end in self._search_matches:
-            match_selection = QTextEdit.ExtraSelection()
-            match_cursor = QTextCursor(self._text_edit.document())
-            match_cursor.setPosition(match_start)
-            match_cursor.setPosition(match_end, QTextCursor.MoveMode.KeepAnchor)
-            match_selection.cursor = match_cursor
-            match_selection.format.setBackground(QColor(_SEARCH_MATCH_COLOR))
-            selections.append(match_selection)
 
         doc = self._text_edit.document()
         for line_number, severity in self._warning_severity.items():
@@ -1423,5 +1349,25 @@ class EditorPanel(QWidget):
             selection.format.setBackground(QColor(_CURRENT_LINE_COLOR))
             selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
             selections.append(selection)
+
+        # Render search scope and matches last so they stay visible above line overlays.
+        if self._search_scope is not None:
+            scope_start, scope_end = self._search_scope
+            scope_selection = QTextEdit.ExtraSelection()
+            scope_cursor = QTextCursor(self._text_edit.document())
+            scope_cursor.setPosition(scope_start)
+            scope_cursor.setPosition(scope_end, QTextCursor.MoveMode.KeepAnchor)
+            scope_selection.cursor = scope_cursor
+            scope_selection.format.setBackground(QColor(_SEARCH_SCOPE_COLOR))
+            selections.append(scope_selection)
+
+        for match_start, match_end in self._search_matches:
+            match_selection = QTextEdit.ExtraSelection()
+            match_cursor = QTextCursor(self._text_edit.document())
+            match_cursor.setPosition(match_start)
+            match_cursor.setPosition(match_end, QTextCursor.MoveMode.KeepAnchor)
+            match_selection.cursor = match_cursor
+            match_selection.format.setBackground(QColor(_SEARCH_MATCH_COLOR))
+            selections.append(match_selection)
 
         self._text_edit.setExtraSelections(selections)

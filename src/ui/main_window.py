@@ -23,6 +23,7 @@ from .comment_panel import CommentPanel
 from .settings_dialog import SettingsDialog
 from .about_dialog import AboutDialog
 from .find_replace_dialog import FindReplaceDialog
+from .graphics_selection_dialog import GraphicsSelectionDialog
 from .navigation_service import NAV_STYLE_CAD
 from ..gcode.grbl_versions import DEFAULT_VERSION
 from ..gcode.dialects import get_profile, list_profiles
@@ -66,6 +67,9 @@ class MainWindow(QMainWindow):
         self._loaded_path: str | None = None
         self._is_dirty = False
         self._find_replace_dialog: FindReplaceDialog | None = None
+        self._graphics_selection_dialog: GraphicsSelectionDialog | None = None
+        self._canvas_selected_lines: list[int] = []
+        self._source_lock_reasons: set[str] = set()
         self._issues_total = 0
         self._issues_errors = 0
         self._issues_warnings = 0
@@ -309,6 +313,8 @@ class MainWindow(QMainWindow):
 
         if self._find_replace_dialog is not None:
             self._find_replace_dialog.set_language(self._language)
+        if self._graphics_selection_dialog is not None:
+            self._graphics_selection_dialog.set_language(self._language)
 
         self._refresh_status_profile_combo()
 
@@ -508,9 +514,16 @@ class MainWindow(QMainWindow):
         elif len(line_numbers) > 1:
             self._comment_panel.set_current_line(None)
 
+        # Keep find/replace hit count and highlights in sync with selection changes.
+        if self._find_replace_dialog is not None and self._find_replace_dialog.isVisible():
+            term, use_regex, search_in_selection, case_sensitive = self._find_replace_dialog.get_search_params()
+            if search_in_selection:
+                self._on_search_updated(term, use_regex, search_in_selection, case_sensitive)
+
     def _on_canvas_segment_selected(self, line_number: int) -> None:
         """Scroll the editor to the line corresponding to the selected canvas segment."""
         self._editor_panel.highlight_line(line_number)
+        self._show_graphics_selection_dialog([line_number])
 
     def _on_canvas_segments_selected(self, line_numbers: list[int]) -> None:
         """Select the editor text range for a lasso / Shift multi-selection."""
@@ -519,9 +532,134 @@ class MainWindow(QMainWindow):
             self._comment_panel.set_current_line(min(line_numbers))
         elif len(line_numbers) > 1:
             self._comment_panel.set_current_line(None)
+        self._show_graphics_selection_dialog(line_numbers)
+
+    def _lock_source_interaction(self, reason: str) -> None:
+        self._source_lock_reasons.add(reason)
+        self._editor_panel.set_interaction_lock(True)
+
+    def _unlock_source_interaction(self, reason: str) -> None:
+        self._source_lock_reasons.discard(reason)
+        self._editor_panel.set_interaction_lock(bool(self._source_lock_reasons))
+
+    def _show_graphics_selection_dialog(self, line_numbers: list[int]) -> None:
+        valid = sorted({ln for ln in line_numbers if ln > 0})
+        self._canvas_selected_lines = valid
+
+        if self._graphics_selection_dialog is None:
+            self._graphics_selection_dialog = GraphicsSelectionDialog(
+                parent=self,
+                language=self._language,
+            )
+            self._graphics_selection_dialog.copy_requested.connect(self._on_graphics_selection_copy)
+            self._graphics_selection_dialog.cut_requested.connect(self._on_graphics_selection_cut)
+            self._graphics_selection_dialog.delete_requested.connect(self._on_graphics_selection_delete)
+            self._graphics_selection_dialog.scale_feed_requested.connect(self._on_graphics_selection_scale_feed)
+            self._graphics_selection_dialog.find_replace_requested.connect(self._on_graphics_selection_find_replace)
+            self._graphics_selection_dialog.dialog_closed.connect(self._on_graphics_selection_closed)
+
+        if not valid:
+            self._clear_graphics_selection()
+            self._graphics_selection_dialog.hide()
+            self._unlock_source_interaction("graphics")
+            return
+
+        stats = self._canvas_panel.get_selection_stats(valid)
+        if stats is None:
+            self._graphics_selection_dialog.hide()
+            return
+
+        self._graphics_selection_dialog.set_language(self._language)
+        self._graphics_selection_dialog.update_selection(stats)
+        self._graphics_selection_dialog.show()
+        self._graphics_selection_dialog.raise_()
+        self._graphics_selection_dialog.activateWindow()
+        self._lock_source_interaction("graphics")
+
+    def _clear_graphics_selection(self) -> None:
+        self._canvas_selected_lines = []
+        self._canvas_panel.highlight_segments([])
+        self._editor_panel.highlight_lines([])
+        self._comment_panel.set_current_line(None)
+
+    def _on_graphics_selection_closed(self) -> None:
+        self._clear_graphics_selection()
+        self._unlock_source_interaction("graphics")
+
+    def _on_graphics_selection_copy(self) -> None:
+        if not self._canvas_selected_lines:
+            return
+        copied = self._editor_panel.copy_lines(self._canvas_selected_lines)
+        if copied:
+            msg = "Zeilen kopiert" if self._language != "en" else "Lines copied"
+            self.statusBar().showMessage(msg)
+
+    def _on_graphics_selection_cut(self) -> None:
+        if not self._canvas_selected_lines:
+            return
+        deleted = self._editor_panel.cut_lines(self._canvas_selected_lines)
+        if deleted > 0:
+            self._canvas_selected_lines = []
+            self._show_graphics_selection_dialog([])
+            msg = (
+                f"{deleted} Zeilen ausgeschnitten" if self._language != "en" else f"Cut {deleted} lines"
+            )
+            self.statusBar().showMessage(msg)
+
+    def _on_graphics_selection_delete(self) -> None:
+        if not self._canvas_selected_lines:
+            return
+        deleted = self._editor_panel.delete_lines(self._canvas_selected_lines)
+        if deleted > 0:
+            self._canvas_selected_lines = []
+            self._show_graphics_selection_dialog([])
+            msg = (
+                f"{deleted} Zeilen geloescht" if self._language != "en" else f"Deleted {deleted} lines"
+            )
+            self.statusBar().showMessage(msg)
+
+    def _on_graphics_selection_scale_feed(self) -> None:
+        if not self._canvas_selected_lines:
+            return
+
+        de = self._language != "en"
+        title = "Vorschub skalieren" if de else "Scale feedrate"
+        label = "Faktor:" if de else "Factor:"
+        factor, ok = QInputDialog.getDouble(
+            self,
+            title,
+            label,
+            1.0,
+            0.001,
+            1000.0,
+            3,
+        )
+        if not ok:
+            return
+
+        changed = self._editor_panel.scale_feedrate_lines(self._canvas_selected_lines, factor)
+        if changed <= 0:
+            msg = "Keine F-Werte in Auswahl" if de else "No F values in selection"
+            self.statusBar().showMessage(msg)
+            return
+
+        self._loaded_content = self._editor_panel.get_content()
+        self._set_dirty(True)
+        self._load_content(
+            self._loaded_content,
+            label=self._loaded_path or self._tr("title.untitled"),
+            reparse=True,
+        )
+        self._editor_panel.highlight_lines(self._canvas_selected_lines)
+
+        msg = (
+            f"Vorschub in {changed} Zeilen skaliert"
+            if de else f"Scaled feedrate on {changed} lines"
+        )
+        self.statusBar().showMessage(msg)
 
     def _on_find_replace(self) -> None:
-        """Open the floating Find and Replace dialog."""
+        """Open the modal Find/Replace dialog."""
         if self._find_replace_dialog is None:
             self._find_replace_dialog = FindReplaceDialog(
                 parent=self,
@@ -537,9 +675,21 @@ class MainWindow(QMainWindow):
         self._find_replace_dialog.show()
         self._find_replace_dialog.raise_()
         self._find_replace_dialog.activateWindow()
+        self._lock_source_interaction("find")
 
     def _on_find_replace_closed(self) -> None:
         self._editor_panel.clear_search_highlights()
+        self._unlock_source_interaction("find")
+
+    def _on_graphics_selection_find_replace(self) -> None:
+        if not self._canvas_selected_lines:
+            return
+        start = min(self._canvas_selected_lines)
+        end = max(self._canvas_selected_lines)
+        self._editor_panel.select_line_range(start, end)
+        self._on_find_replace()
+        if self._find_replace_dialog is not None:
+            self._find_replace_dialog.set_search_in_selection(True)
 
     def _on_search_updated(self, term: str, use_regex: bool, search_in_selection: bool, case_sensitive: bool) -> None:
         found, count = self._editor_panel.preview_search(term, use_regex, search_in_selection, case_sensitive)

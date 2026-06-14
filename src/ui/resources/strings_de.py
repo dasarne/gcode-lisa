@@ -122,7 +122,7 @@ STRINGS: dict[str, str] = {
         "GCode Lisa wird als fokussiertes G-Code-Werkzeug für CNC entwickelt.<br><br>"
         "Entwicklung: Arne von Irmer und ChatGPT.<br>"
         "Das Projekt lebt im öffentlichen Repository unter "
-        '<a href="https://github.com/dasarne/grbl-visualizer">github.com/dasarne/GCode-Lisa</a>.<br>'
+        '<a href="https://github.com/dasarne/gcode-lisar">github.com/dasarne/GCode-Lisa</a>.<br>'
         "Beiträge sind willkommen."
     ),
     "about.license.text": (

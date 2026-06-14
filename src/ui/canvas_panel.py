@@ -1292,6 +1292,43 @@ class CanvasPanel(QWidget):
         """Return current mouse navigation style id."""
         return self._navigation_style
 
+    def get_selection_stats(self, line_numbers: list[int]) -> dict[str, float | int] | None:
+        """Return metrics for selected line numbers in world coordinates."""
+        selected = {ln for ln in line_numbers if ln > 0}
+        if not selected:
+            return None
+
+        seg_count = 0
+        xs: list[float] = []
+        ys: list[float] = []
+        zs: list[float] = []
+
+        for seg in self._viewport._segs:
+            if seg.line_number is None or seg.line_number not in selected:
+                continue
+            seg_count += 1
+            for x, y, z in seg.world_points:
+                xs.append(x)
+                ys.append(y)
+                zs.append(z)
+
+        if not xs:
+            return {
+                "line_count": len(selected),
+                "segment_count": 0,
+                "x_span": 0.0,
+                "y_span": 0.0,
+                "z_span": 0.0,
+            }
+
+        return {
+            "line_count": len(selected),
+            "segment_count": seg_count,
+            "x_span": max(xs) - min(xs),
+            "y_span": max(ys) - min(ys),
+            "z_span": max(zs) - min(zs),
+        }
+
     def set_language(self, language: str) -> None:
         """Set UI language for panel labels."""
         self._language = language
