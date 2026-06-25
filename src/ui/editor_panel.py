@@ -24,6 +24,7 @@ from .editor.editor_search import (
     EditorSearchState,
     get_search_bounds,
     get_search_ranges,
+    semantic_ranges_to_text_ranges,
     shift_scope_after_replace,
     update_search_scope,
 )
@@ -55,6 +56,8 @@ from .editor.editor_selection import (
     update_multi_line_selection,
     update_single_line_selection,
 )
+from .selection.selection_model import SelectionModel
+from .selection.selection_types import LineRange
 from .editor.editor_undo import (
     delete_document_range,
     grouped_edit,
@@ -64,9 +67,11 @@ from .editor.editor_undo import (
 )
 from .search_service import (
     compute_match_ranges,
+    deserialize_multi_range_text,
     find_next_match,
     find_previous_match,
     replace_all_in_ranges,
+    serialize_multi_range_text,
 )
 from .widgets import GCodeEditor
 
@@ -190,6 +195,9 @@ class EditorPanel(QWidget):
         self._suppress_cursor_events = False
         self._suppress_text_change = False
         self._managed_search_edit = False
+        self._ctrl_drag_active = False
+        self._ctrl_drag_mode: str | None = None
+        self._ctrl_drag_visited_lines: set[int] = set()
         self._setup_ui()
 
     def set_language(self, language: str) -> None:
@@ -252,9 +260,115 @@ class EditorPanel(QWidget):
 
         if (
             obj is self._text_edit.viewport()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and isinstance(event, QMouseEvent)
+        ):
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and (
+                    event.modifiers()
+                    & Qt.KeyboardModifier.ControlModifier
+                )
+            ):
+                cursor = self._text_edit.cursorForPosition(
+                    event.position().toPoint(),
+                )
+
+                line_number = cursor.blockNumber() + 1
+
+                self._selection_state.selected_line = line_number
+
+                already_selected = (
+                    self._selection_state.selection_model.contains(
+                        line_number,
+                    )
+                )
+
+                self._ctrl_drag_active = True
+                self._ctrl_drag_mode = (
+                    "remove" if already_selected else "add"
+                )
+                self._ctrl_drag_visited_lines = {line_number}
+
+                self._selection_state.selection_model.toggle_line(
+                    line_number,
+                )
+
+                self._suppress_cursor_events = True
+                cursor.clearSelection()
+                self._text_edit.setTextCursor(cursor)
+                self._suppress_cursor_events = False
+
+                self._apply_extra_selections(cursor)
+
+                self.line_selected.emit(line_number)
+                self.lines_selected.emit(
+                    self._selection_state.selection_model.selected_lines(),
+                )
+
+                return True
+
+        if (
+            obj is self._text_edit.viewport()
             and event.type() == QEvent.Type.MouseMove
             and isinstance(event, QMouseEvent)
         ):
+            if (
+                self._ctrl_drag_active
+                and self._ctrl_drag_mode is not None
+                and (
+                    event.buttons()
+                    & Qt.MouseButton.LeftButton
+                )
+                and (
+                    event.modifiers()
+                    & Qt.KeyboardModifier.ControlModifier
+                )
+            ):
+                cursor = self._text_edit.cursorForPosition(
+                    event.position().toPoint(),
+                )
+
+                line_number = cursor.blockNumber() + 1
+
+                if line_number not in self._ctrl_drag_visited_lines:
+                    is_selected = (
+                        self._selection_state.selection_model.contains(
+                            line_number,
+                        )
+                    )
+
+                    should_toggle = (
+                        self._ctrl_drag_mode == "add"
+                        and not is_selected
+                    ) or (
+                        self._ctrl_drag_mode == "remove"
+                        and is_selected
+                    )
+
+                    if should_toggle:
+                        self._selection_state.selection_model.toggle_line(
+                            line_number,
+                        )
+
+                    self._ctrl_drag_visited_lines.add(
+                        line_number,
+                    )
+
+                    self._suppress_cursor_events = True
+                    cursor.clearSelection()
+                    self._text_edit.setTextCursor(cursor)
+                    self._suppress_cursor_events = False
+
+                    self._apply_extra_selections(cursor)
+
+                    self.line_selected.emit(line_number)
+                    self.lines_selected.emit(
+                        self._selection_state.selection_model.selected_lines(),
+                    )
+
+                return True
+
             update_hover_tooltip(
                 text_edit=self._text_edit,
                 event=event,
@@ -262,6 +376,17 @@ class EditorPanel(QWidget):
                 profile_id=self._profile_id,
                 line_warnings=self._line_warnings,
             )
+            return False
+
+        if (
+            obj is self._text_edit.viewport()
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and isinstance(event, QMouseEvent)
+        ):
+            self._ctrl_drag_active = False
+            self._ctrl_drag_mode = None
+            self._ctrl_drag_visited_lines.clear()
+
             return False
 
         if obj is self._text_edit.viewport() and event.type() == QEvent.Type.Leave:
@@ -349,6 +474,7 @@ class EditorPanel(QWidget):
             self._selection_state,
             line_number,
         )
+
         cursor = QTextCursor(block)
         cursor.clearSelection()
         self._suppress_cursor_events = True
@@ -378,6 +504,7 @@ class EditorPanel(QWidget):
             self._selection_state,
             valid_lines,
         )
+
         cursor = QTextCursor(first_block)
         cursor.clearSelection()
         self._suppress_cursor_events = True
@@ -392,7 +519,7 @@ class EditorPanel(QWidget):
         """Delete all currently multi-selected lines as full logical blocks."""
         doc = self._document()
         lines = sorted(
-            self._selection_state.multi_selected_lines,
+            self._selection_state.selection_model.selected_lines(),
             reverse=True,
         )
         if not lines:
@@ -432,21 +559,53 @@ class EditorPanel(QWidget):
         self._apply_extra_selections()
 
     def copy(self) -> None:
-        self._text_edit.copy()
+        selection_model = self.selection_model()
+
+        if len(selection_model.ranges) <= 1:
+            self._text_edit.copy()
+            return
+
+        doc = self._document()
+        copied_segments: list[str] = []
+
+        for semantic_range in selection_model.ranges:
+            for line_number in semantic_range.iter_lines():
+                block = doc.findBlockByLineNumber(line_number - 1)
+
+                if not block.isValid():
+                    continue
+
+                copied_segments.append(block.text())
+
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        clipboard.setText(
+            serialize_multi_range_text(copied_segments),
+        )
 
     def copy_lines(self, line_numbers: list[int]) -> str:
         """Copy explicit 1-based lines to clipboard and return copied text."""
         if not line_numbers:
             return ""
-        old_selection = set(self._selection_state.multi_selected_lines)
-        self._selection_state.multi_selected_lines = {
-            ln for ln in line_numbers if ln > 0
-        }
+        old_selection = SelectionModel.from_snapshot(
+            self._selection_state.selection_model.to_snapshot(),
+        )
+
+        valid_lines = sorted({ln for ln in line_numbers if ln > 0})
+
+        update_multi_line_selection(
+            self._selection_state,
+            valid_lines,
+        )
+
         self._copy_multi_selected_lines()
+
         clipboard = QGuiApplication.clipboard()
         assert clipboard is not None
         copied = clipboard.text()
-        self._selection_state.multi_selected_lines = old_selection
+
+        self._selection_state.selection_model = old_selection
+
         self._apply_extra_selections()
         return copied
 
@@ -459,6 +618,7 @@ class EditorPanel(QWidget):
             self._selection_state,
             valid,
         )
+
         self._delete_multi_selected_lines()
         return len(valid)
 
@@ -515,25 +675,69 @@ class EditorPanel(QWidget):
     def _copy_multi_selected_lines(self) -> None:
         doc = self._document()
         lines_text: list[str] = []
-        for line_number in sorted(self._selection_state.multi_selected_lines):
+        for line_number in (
+            self._selection_state.selection_model.selected_lines()
+        ):
             block = doc.findBlockByLineNumber(line_number - 1)
             if block.isValid():
                 lines_text.append(block.text())
 
         clipboard = QGuiApplication.clipboard()
         assert clipboard is not None
-        clipboard.setText("\n".join(lines_text))
+        clipboard.setText(
+            serialize_multi_range_text(lines_text),
+        )
 
     def paste(self) -> None:
-        self._text_edit.paste()
+        """Paste using semantic primary selection semantics.
+
+        Transition note:
+        - Multi-range paste fan-out is not implemented yet.
+        - Clipboard multi-range structure is already preserved.
+        - Current behavior pastes merged content into the primary selection.
+        """
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+
+        pasted_text = clipboard.text()
+
+        if not pasted_text:
+            return
+
+        segments = deserialize_multi_range_text(pasted_text)
+
+        cursor = self._text_edit.textCursor()
+
+        self._managed_search_edit = True
+
+        try:
+            with grouped_edit(cursor):
+                cursor.insertText("\n".join(segments))
+
+            self._text_edit.setTextCursor(cursor)
+
+            inserted_line = cursor.blockNumber() + 1
+
+            update_single_line_selection(
+                self._selection_state,
+                inserted_line,
+            )
+
+            self._apply_extra_selections(cursor)
+        finally:
+            self._managed_search_edit = False
 
     def undo(self) -> None:
         """Undo last edit."""
         self._text_edit.undo()
 
+        self._apply_extra_selections()
+
     def redo(self) -> None:
         """Redo last undone edit."""
         self._text_edit.redo()
+
+        self._apply_extra_selections()
 
     def can_undo(self) -> bool:
         """Return whether undo is available."""
@@ -545,34 +749,80 @@ class EditorPanel(QWidget):
 
     def get_selected_text(self) -> str:
         """Return text of currently selected lines."""
-        if self._selection_state.multi_selected_lines:
+        semantic_lines = (
+            self._selection_state.selection_model.selected_lines()
+        )
+
+        if semantic_lines:
             doc = self._document()
             lines_text: list[str] = []
-            for ln in sorted(self._selection_state.multi_selected_lines):
+
+            for ln in semantic_lines:
                 block = doc.findBlockByLineNumber(ln - 1)
+
                 if block.isValid():
                     lines_text.append(block.text())
+
             return "\n".join(lines_text)
         cursor = self._text_edit.textCursor()
         return cursor.selectedText()
 
     def get_selected_lines(self) -> list[int]:
-        """Return currently active selected lines (1-based)."""
+        """Return currently active selected lines (1-based).
+
+        Transition note:
+        - SelectionModel is now the primary semantic source.
+        - QTextCursor fallback remains only for native transient text selection.
+        """
+        model_lines = self._selection_state.selection_model.selected_lines()
+
+        if model_lines:
+            return model_lines
+
+        cursor = self._text_edit.textCursor()
+
+        if not cursor.hasSelection():
+            return []
+
         return get_selected_lines(
             self._document(),
-            self._text_edit.textCursor(),
-            self._selection_state.multi_selected_lines,
+            cursor,
         )
 
+    def selection_model(self) -> SelectionModel:
+        """Return the shared semantic selection model instance.
+
+        Transition note:
+        - QTextCursor is still used for native editor interaction.
+        - The semantic ownership is gradually moving into SelectionModel.
+        """
+        return self._selection_state.selection_model
+
     def select_line_range(self, start_line: int, end_line: int) -> None:
-        """Create a native text selection from start_line to end_line (1-based)."""
+        """Create a native text selection from start_line to end_line (1-based).
+
+        Transition note:
+        - QTextCursor selection remains a rendering/native interaction layer.
+        - SelectionModel stores the semantic authoritative range.
+        """
+        semantic_range = LineRange(
+            min(start_line, end_line),
+            max(start_line, end_line),
+        )
+
+        self._selection_state.selection_model.set_ranges(
+            [semantic_range],
+        )
+
         cursor = create_line_range_cursor(
             self._document(),
             start_line,
             end_line,
         )
+
         if cursor is None:
             return
+
         self._suppress_cursor_events = True
         self._text_edit.setTextCursor(cursor)
         self._suppress_cursor_events = False
@@ -593,7 +843,12 @@ class EditorPanel(QWidget):
             return False
 
         cursor = self._text_edit.textCursor()
-        update_search_scope(self._search_state, cursor, search_in_selection)
+        update_search_scope(
+            self._search_state,
+            cursor,
+            search_in_selection,
+            self.selection_model(),
+        )
         self._update_search_matches(
             term,
             use_regex,
@@ -621,7 +876,12 @@ class EditorPanel(QWidget):
             return False
 
         cursor = self._text_edit.textCursor()
-        update_search_scope(self._search_state, cursor, search_in_selection)
+        update_search_scope(
+            self._search_state,
+            cursor,
+            search_in_selection,
+            self.selection_model(),
+        )
         self._update_search_matches(
             term,
             use_regex,
@@ -654,7 +914,12 @@ class EditorPanel(QWidget):
     ) -> tuple[bool, int]:
         """Incremental search preview: keep match selected and return hit count."""
         cursor = self._text_edit.textCursor()
-        update_search_scope(self._search_state, cursor, search_in_selection)
+        update_search_scope(
+            self._search_state,
+            cursor,
+            search_in_selection,
+            self.selection_model(),
+        )
         # When the scope was just locked from the cursor's current selection,
         # that selection (orange QPalette highlight) would cover the green
         # match highlights.  Move the cursor to scope start to make them visible.
@@ -683,6 +948,7 @@ class EditorPanel(QWidget):
             cursor,
             search_in_selection,
             self._search_state.scope,
+            self._search_state.semantic_scope,
         )
         if ranges is None:
             self._search_state.matches = []
@@ -789,13 +1055,31 @@ class EditorPanel(QWidget):
         content = self.get_content()
 
         cursor = self._text_edit.textCursor()
-        update_search_scope(self._search_state, cursor, search_in_selection)
+        update_search_scope(
+            self._search_state,
+            cursor,
+            search_in_selection,
+            self.selection_model(),
+        )
         ranges = get_search_ranges(
             content,
             cursor,
             search_in_selection,
             self._search_state.scope,
+            self._search_state.semantic_scope,
         )
+
+        selection_ranges = self.selection_model().ranges
+
+        if search_in_selection and selection_ranges:
+            semantic_ranges = semantic_ranges_to_text_ranges(
+                content,
+                selection_ranges,
+            )
+
+            if semantic_ranges:
+                ranges = semantic_ranges
+
         if ranges is None:
             return 0
 
@@ -1081,6 +1365,7 @@ class EditorPanel(QWidget):
             cursor,
             search_in_selection,
             self._search_state.scope,
+            self._search_state.semantic_scope,
         )
         if not term or ranges is None:
             self._search_state.matches = []
@@ -1132,14 +1417,38 @@ class EditorPanel(QWidget):
         line_number = cursor.blockNumber() + 1
         self._selection_state.selected_line = line_number
 
+        if cursor.hasSelection():
+            selected_lines = get_selected_lines(
+                self._document(),
+                cursor,
+            )
+
+            update_multi_line_selection(
+                self._selection_state,
+                selected_lines,
+            )
+
+            active_position = cursor.position()
+
+            self._suppress_cursor_events = True
+
+            cursor.clearSelection()
+            cursor.setPosition(active_position)
+
+            self._text_edit.setTextCursor(cursor)
+
+            self._suppress_cursor_events = False
+        else:
+            update_single_line_selection(
+                self._selection_state,
+                line_number,
+            )
+
         self._apply_extra_selections(cursor)
         self.line_selected.emit(line_number)
-        selected_lines = (
-            sorted(self._selection_state.multi_selected_lines)
-            if self._selection_state.multi_selected_lines
-            else [line_number]
+        self.lines_selected.emit(
+            self._selection_state.selection_model.selected_lines(),
         )
-        self.lines_selected.emit(selected_lines)
 
     def _on_text_changed(self) -> None:
         if self._suppress_text_change:
@@ -1154,6 +1463,10 @@ class EditorPanel(QWidget):
         Undo/redo and free typing can move or delete text without going through
         the managed search-replace path, so cached absolute match offsets are no
         longer trustworthy after such edits.
+
+        Transition note:
+        - SelectionModel remains authoritative semantic state.
+        - Undo/redo must not implicitly discard semantic selections.
         """
         self._search_state.clear()
         self._apply_extra_selections()
@@ -1177,6 +1490,6 @@ class EditorPanel(QWidget):
             self._document(),
             cursor,
             self._warning_severity,
-            self._selection_state.multi_selected_lines,
+            self._selection_state.selection_model,
             self._highlight_state,
         )

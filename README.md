@@ -16,6 +16,7 @@
 
 - **Dual-view interface**: Side-by-side G-Code editor and interactive 3D canvas visualization
 - **Bidirectional sync**: Click a line in the editor to highlight the corresponding path on the canvas, and vice versa
+- **Advanced multi-selection workflows**: Ctrl-click and Ctrl-drag to add or remove multiple semantic line ranges directly in the editor
 - **Multi-dialect support**: GRBL 1.1 / 1.1H / 1.1j, LinuxCNC, and Marlin with auto-detection and per-dialect command validation
 - **Syntax highlighting**: Color-coded G/M commands, axis words, arc parameters, feed rate, and comments
 - **Contextual hover tooltips**: Hover any token in the editor to see its value and any analysis issues for that line
@@ -117,6 +118,8 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for environment setup, testing, and code st
 | `Ctrl+H` | Find & Replace |
 | `Ctrl+I` | Open Messages dialog |
 | `Ctrl+Q` | Quit |
+| `Ctrl+Click` | Add/remove semantic line selections |
+| `Ctrl+Drag` | Paint multi-line semantic selections |
 
 > **Note:** This project uses an AI-assisted development workflow where GitHub Copilot coding agent implements features described in structured issues, guided by skills and architecture documents.
 

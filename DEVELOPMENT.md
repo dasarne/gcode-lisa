@@ -113,3 +113,18 @@ This project uses GitHub Copilot coding agent with structured skills:
 - Each agent session should run the test suite before committing
 
 This workflow keeps implementation consistent and well-documented even across multiple contributors.
+
+## Documentation Conventions
+
+Public project documentation is written in English.
+
+This includes:
+- `README.md`
+- `docs/`
+- ADRs
+- contributor documentation
+- user-facing architecture documentation
+
+Internal planning and exploratory documents may be written in German and should remain separated from the public documentation structure.
+
+Internal strategy and roadmap documents belong in the `internal/` directory.

@@ -104,7 +104,7 @@ def build_editor_overlay_selections(
     document: QTextDocument,
     cursor: QTextCursor,
     warning_severity,
-    multi_selected_lines: set[int],
+    selection_model,
     highlight_state: EditorHighlightState,
 ) -> list[QTextEdit.ExtraSelection]:
     """Compose editor overlays in the current rendering order."""
@@ -120,14 +120,14 @@ def build_editor_overlay_selections(
     selections.extend(
         build_multi_line_selections(
             document,
-            multi_selected_lines,
+            selection_model,
         ),
     )
 
     cursor_line = cursor.blockNumber() + 1
     if should_show_current_line_selection(
         cursor_line,
-        multi_selected_lines,
+        selection_model,
     ):
         selections.append(
             build_current_line_selection(cursor),
@@ -150,7 +150,7 @@ def apply_editor_overlay_selections(
     document: QTextDocument,
     cursor: QTextCursor,
     warning_severity,
-    multi_selected_lines: set[int],
+    selection_model,
     highlight_state: EditorHighlightState,
 ) -> None:
     """Build and apply all editor overlay selections."""
@@ -158,7 +158,7 @@ def apply_editor_overlay_selections(
         document,
         cursor,
         warning_severity,
-        multi_selected_lines,
+        selection_model,
         highlight_state,
     )
     editor.setExtraSelections(selections)

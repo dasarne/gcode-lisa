@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 TextRange = tuple[int, int]
+
+_MULTI_RANGE_SEPARATOR = "\n<<GCODE_LISA_MULTI_RANGE>>\n"
 
 
 def compute_match_ranges(
@@ -72,6 +75,37 @@ def find_previous_match(matches: list[TextRange], anchor: int) -> TextRange | No
     return matches[-1]
 
 
+def serialize_multi_range_text(
+    segments: Iterable[str],
+) -> str:
+    """Serialize semantic multi-range clipboard content.
+
+    Transition note:
+    - Uses a lightweight textual separator for now.
+    - This intentionally stays clipboard-compatible plain text.
+    - Future versions may replace this with richer clipboard metadata.
+    """
+    normalized = [segment for segment in segments]
+
+    if not normalized:
+        return ""
+
+    return _MULTI_RANGE_SEPARATOR.join(normalized)
+
+
+def deserialize_multi_range_text(
+    text: str,
+) -> list[str]:
+    """Deserialize semantic multi-range clipboard content."""
+    if not text:
+        return []
+
+    if _MULTI_RANGE_SEPARATOR not in text:
+        return [text]
+
+    return text.split(_MULTI_RANGE_SEPARATOR)
+
+
 def replace_all_in_ranges(
     content: str,
     ranges: list[TextRange],
@@ -88,7 +122,17 @@ def replace_all_in_ranges(
         new_content = content
         count = 0
 
-        for start_bound, end_bound in reversed(ranges):
+        stable_ranges = sorted(
+            {
+                (
+                    min(start_bound, end_bound),
+                    max(start_bound, end_bound),
+                )
+                for start_bound, end_bound in ranges
+            },
+        )
+
+        for start_bound, end_bound in reversed(stable_ranges):
             target = new_content[start_bound:end_bound]
             if use_regex:
                 flags = re.MULTILINE

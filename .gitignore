@@ -48,3 +48,6 @@ htmlcov/
 # Distribution
 *.spec
 !packaging/*.spec
+
+#Internal stuff
+internal/

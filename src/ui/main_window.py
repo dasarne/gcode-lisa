@@ -23,7 +23,6 @@ from .comment_panel import CommentPanel
 from .settings_dialog import SettingsDialog
 from .about_dialog import AboutDialog
 from .find_replace_dialog import FindReplaceDialog
-from .graphics_selection_dialog import GraphicsSelectionDialog
 from .navigation_service import NAV_STYLE_CAD
 from ..gcode.grbl_versions import DEFAULT_VERSION
 from ..gcode.dialects import get_profile, list_profiles
@@ -31,6 +30,7 @@ from ..gcode.parser import GCodeParser
 from ..gcode.detection import DetectionResult, detect_dialect
 from ..analyzer.analyzer import GCodeAnalyzer, WarningSeverity
 from ..geometry.path import build_toolpath
+from .selection.selection_model import SelectionModel
 
 
 class MainWindow(QMainWindow):
@@ -67,7 +67,9 @@ class MainWindow(QMainWindow):
         self._loaded_path: str | None = None
         self._is_dirty = False
         self._find_replace_dialog: FindReplaceDialog | None = None
-        self._graphics_selection_dialog: GraphicsSelectionDialog | None = None
+        self._shared_selection_model: SelectionModel = (
+            self._editor_panel.selection_model()
+        )
         self._canvas_selected_lines: list[int] = []
         self._source_lock_reasons: set[str] = set()
         self._issues_total = 0
@@ -313,8 +315,6 @@ class MainWindow(QMainWindow):
 
         if self._find_replace_dialog is not None:
             self._find_replace_dialog.set_language(self._language)
-        if self._graphics_selection_dialog is not None:
-            self._graphics_selection_dialog.set_language(self._language)
 
         self._refresh_status_profile_combo()
 
@@ -507,8 +507,20 @@ class MainWindow(QMainWindow):
         """Kept for compatibility – canvas routing now via lines_selected."""
 
     def _on_editor_lines_selected(self, line_numbers: list[int]) -> None:
-        """Highlight canvas segments for all selected editor lines."""
-        self._canvas_panel.highlight_segments(line_numbers)
+        """Highlight canvas segments for all selected editor lines.
+
+        Transition notes:
+        - Canvas highlighting still consumes plain line lists.
+        - SelectionModel is now the semantic shared selection source.
+        - CanvasPanel remains partially adapter-based during migration.
+        """
+        self._canvas_selected_lines = sorted(
+            {line for line in line_numbers if line > 0},
+        )
+
+        self._canvas_panel.highlight_segments(
+            self._canvas_selected_lines,
+        )
         if len(line_numbers) == 1:
             self._comment_panel.set_current_line(line_numbers[0])
         elif len(line_numbers) > 1:
@@ -523,16 +535,26 @@ class MainWindow(QMainWindow):
     def _on_canvas_segment_selected(self, line_number: int) -> None:
         """Scroll the editor to the line corresponding to the selected canvas segment."""
         self._editor_panel.highlight_line(line_number)
-        self._show_graphics_selection_dialog([line_number])
 
     def _on_canvas_segments_selected(self, line_numbers: list[int]) -> None:
-        """Select the editor text range for a lasso / Shift multi-selection."""
-        self._editor_panel.highlight_lines(line_numbers)
+        """Select the editor text range for a lasso / Shift multi-selection.
+
+        Transition notes:
+        - Canvas selection currently projects into editor overlays.
+        - Shared SelectionModel ownership exists in EditorPanel.
+        - MainWindow still coordinates transitional synchronization paths.
+        """
+        self._canvas_selected_lines = sorted(
+            {line for line in line_numbers if line > 0},
+        )
+
+        self._editor_panel.highlight_lines(
+            self._canvas_selected_lines,
+        )
         if len(line_numbers) == 1:
             self._comment_panel.set_current_line(min(line_numbers))
         elif len(line_numbers) > 1:
             self._comment_panel.set_current_line(None)
-        self._show_graphics_selection_dialog(line_numbers)
 
     def _lock_source_interaction(self, reason: str) -> None:
         self._source_lock_reasons.add(reason)
@@ -542,49 +564,11 @@ class MainWindow(QMainWindow):
         self._source_lock_reasons.discard(reason)
         self._editor_panel.set_interaction_lock(bool(self._source_lock_reasons))
 
-    def _show_graphics_selection_dialog(self, line_numbers: list[int]) -> None:
-        valid = sorted({ln for ln in line_numbers if ln > 0})
-        self._canvas_selected_lines = valid
-
-        if self._graphics_selection_dialog is None:
-            self._graphics_selection_dialog = GraphicsSelectionDialog(
-                parent=self,
-                language=self._language,
-            )
-            self._graphics_selection_dialog.copy_requested.connect(self._on_graphics_selection_copy)
-            self._graphics_selection_dialog.cut_requested.connect(self._on_graphics_selection_cut)
-            self._graphics_selection_dialog.delete_requested.connect(self._on_graphics_selection_delete)
-            self._graphics_selection_dialog.scale_feed_requested.connect(self._on_graphics_selection_scale_feed)
-            self._graphics_selection_dialog.find_replace_requested.connect(self._on_graphics_selection_find_replace)
-            self._graphics_selection_dialog.dialog_closed.connect(self._on_graphics_selection_closed)
-
-        if not valid:
-            self._clear_graphics_selection()
-            self._graphics_selection_dialog.hide()
-            self._unlock_source_interaction("graphics")
-            return
-
-        stats = self._canvas_panel.get_selection_stats(valid)
-        if stats is None:
-            self._graphics_selection_dialog.hide()
-            return
-
-        self._graphics_selection_dialog.set_language(self._language)
-        self._graphics_selection_dialog.update_selection(stats)
-        self._graphics_selection_dialog.show()
-        self._graphics_selection_dialog.raise_()
-        self._graphics_selection_dialog.activateWindow()
-        self._lock_source_interaction("graphics")
-
     def _clear_graphics_selection(self) -> None:
         self._canvas_selected_lines = []
         self._canvas_panel.highlight_segments([])
         self._editor_panel.highlight_lines([])
         self._comment_panel.set_current_line(None)
-
-    def _on_graphics_selection_closed(self) -> None:
-        self._clear_graphics_selection()
-        self._unlock_source_interaction("graphics")
 
     def _on_graphics_selection_copy(self) -> None:
         if not self._canvas_selected_lines:
@@ -600,7 +584,7 @@ class MainWindow(QMainWindow):
         deleted = self._editor_panel.cut_lines(self._canvas_selected_lines)
         if deleted > 0:
             self._canvas_selected_lines = []
-            self._show_graphics_selection_dialog([])
+            self._clear_graphics_selection()
             msg = (
                 f"{deleted} Zeilen ausgeschnitten" if self._language != "en" else f"Cut {deleted} lines"
             )
@@ -612,7 +596,7 @@ class MainWindow(QMainWindow):
         deleted = self._editor_panel.delete_lines(self._canvas_selected_lines)
         if deleted > 0:
             self._canvas_selected_lines = []
-            self._show_graphics_selection_dialog([])
+            self._clear_graphics_selection()
             msg = (
                 f"{deleted} Zeilen geloescht" if self._language != "en" else f"Deleted {deleted} lines"
             )

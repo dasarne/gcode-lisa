@@ -8,6 +8,8 @@ from PyQt6.QtGui import QColor, QTextCursor, QTextDocument, QTextFormat
 from PyQt6.QtWidgets import QTextEdit
 
 from ...analyzer.analyzer import WarningSeverity
+from ..selection.selection_model import SelectionModel
+from ..selection.selection_types import LineRange
 
 
 _CURRENT_LINE_COLOR = "#D9E8FF"
@@ -16,9 +18,14 @@ _MULTI_LINE_SELECTION_COLOR = "#FFE3B8"
 
 @dataclass(slots=True)
 class EditorSelectionState:
-    """Mutable selection state shared with EditorPanel."""
+    """Mutable selection state shared with EditorPanel.
 
-    multi_selected_lines: set[int] = field(default_factory=set)
+    Transition notes:
+    - SelectionModel is the semantic selection source shared with canvas.
+    - QTextCursor state still coexists during the migration phase.
+    """
+
+    selection_model: SelectionModel = field(default_factory=SelectionModel)
     selection_anchor_line: int | None = None
     selected_line: int | None = None
     locked_selection: tuple[int, int] | None = None
@@ -69,12 +76,12 @@ def build_current_line_selection(
 
 def build_multi_line_selections(
     document: QTextDocument,
-    line_numbers: set[int],
+    selection_model: SelectionModel,
 ) -> list[QTextEdit.ExtraSelection]:
-    """Build overlays for multi-selected editor lines."""
+    """Build overlays for semantic multi-line selections."""
     selections: list[QTextEdit.ExtraSelection] = []
 
-    for line_number in sorted(line_numbers):
+    for line_number in selection_model.selected_lines():
         block = document.findBlockByLineNumber(line_number - 1)
         if not block.isValid():
             continue
@@ -92,12 +99,12 @@ def build_multi_line_selections(
 def get_selected_lines(
     document: QTextDocument,
     cursor: QTextCursor,
-    multi_selected_lines: set[int],
 ) -> list[int]:
-    """Return the active 1-based selected lines."""
-    if multi_selected_lines:
-        return sorted(multi_selected_lines)
+    """Return the active 1-based selected lines.
 
+    Transition note:
+    - Semantic SelectionModel ownership is preferred.
+    """
     if cursor.hasSelection():
         selection_start = cursor.selectionStart()
         selection_end = cursor.selectionEnd()
@@ -177,7 +184,8 @@ def update_single_line_selection(
     line_number: int,
 ) -> None:
     """Update state for a single active line selection."""
-    state.multi_selected_lines = {line_number}
+    state.selection_model.set_single_line(line_number)
+
     state.selection_anchor_line = line_number
     state.selected_line = line_number
 
@@ -190,24 +198,30 @@ def update_multi_line_selection(
     first_line = line_numbers[0]
 
     state.selected_line = first_line
-    state.multi_selected_lines = set(line_numbers)
     state.selection_anchor_line = first_line
+
+    ranges = [
+        LineRange(line_number, line_number)
+        for line_number in sorted(set(line_numbers))
+    ]
+
+    state.selection_model.set_ranges(ranges)
 
 
 def clear_line_selection(
     state: EditorSelectionState,
 ) -> None:
     """Clear multi-line selection tracking."""
-    state.multi_selected_lines.clear()
+    state.selection_model.clear()
     state.selection_anchor_line = None
 
 
 def should_show_current_line_selection(
     cursor_line: int,
-    multi_selected_lines: set[int],
+    selection_model: SelectionModel,
 ) -> bool:
     """Return whether the current-line overlay should be visible."""
-    return cursor_line not in multi_selected_lines
+    return not selection_model.contains(cursor_line)
 
 
 _SEVERITY_COLORS: dict[WarningSeverity, str] = {

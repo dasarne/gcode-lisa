@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is inspired by Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 
+## [Unreleased]
+
+### Added
+- Ctrl-drag semantic multi-selection workflow in the editor
+- Continuous add/remove selection painting for multi-range editing
+- Regression tests for semantic Ctrl-drag selection behavior
+
+### Improved
+- Multi-selection interaction consistency between editor and canvas workflows
+- Documentation for advanced semantic selection shortcuts
+
 ## [1.0.0] - 2026-06-14
 
 ### Added

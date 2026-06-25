@@ -27,19 +27,24 @@ def create_editor_widget() -> GCodeEditor:
 
 
 def configure_editor_palette(text_edit: GCodeEditor) -> None:
-    """Apply a softer native text-selection palette."""
+    """Neutralize native QTextCursor selection rendering.
+
+    Semantic selections are rendered through ExtraSelections overlays.
+    QTextCursor remains an interaction/navigation primitive only.
+    """
     palette = text_edit.palette()
-    soft_selection = QColor("#DCEBFF")
+
+    transparent_selection = QColor(0, 0, 0, 0)
 
     palette.setColor(
         QPalette.ColorGroup.Active,
         QPalette.ColorRole.Highlight,
-        soft_selection,
+        transparent_selection,
     )
     palette.setColor(
         QPalette.ColorGroup.Inactive,
         QPalette.ColorRole.Highlight,
-        soft_selection,
+        transparent_selection,
     )
     palette.setColor(
         QPalette.ColorGroup.Active,
