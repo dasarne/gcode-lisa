@@ -1,4 +1,4 @@
-# Changelog
+Changelog
 
 All notable changes to this project will be documented in this file.
 
@@ -11,6 +11,9 @@ https://keepachangelog.com/en/1.1.0/
 - Ctrl-drag semantic multi-selection workflow in the editor
 - Continuous add/remove selection painting for multi-range editing
 - Regression tests for semantic Ctrl-drag selection behavior
+- Neuer „Gehe zu Zeile…“-Dialog im Bearbeiten-Menü
+- Tastenkürzel `Ctrl+G` für direkte Zeilennavigation im Editor
+- Validierte Zeilensprünge mit automatischem Scrollen zur Zielzeile
 
 ### Improved
 - Multi-selection interaction consistency between editor and canvas workflows

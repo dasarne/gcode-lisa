@@ -181,6 +181,13 @@ class MainWindow(QMainWindow):
         self._replace_action.triggered.connect(self._on_find_replace)
         self._edit_menu.addAction(self._replace_action)
 
+        self._goto_line_action = QAction("", self)
+        self._goto_line_action.setShortcut(QKeySequence("Ctrl+G"))
+        self._goto_line_action.triggered.connect(self._on_go_to_line)
+        self._edit_menu.addAction(self._goto_line_action)
+
+        self._edit_menu.addSeparator()
+
         self._messages_action = QAction("", self)
         self._messages_action.setShortcut(QKeySequence("Ctrl+I"))
         self._messages_action.triggered.connect(self._canvas_panel.show_warning_dialog)
@@ -290,6 +297,26 @@ class MainWindow(QMainWindow):
         self._set_dirty(False)
         self.statusBar().showMessage(self._tr("status.saved").format(path=path))
         return True
+
+    def _on_go_to_line(self) -> None:
+        """Open line navigation dialog and jump to a specific editor line."""
+        line_number, accepted = QInputDialog.getInt(
+            self,
+            self._tr("goto_line.title"),
+            self._tr("goto_line.label"),
+            1,
+            1,
+            1_000_000,
+            1,
+        )
+
+        if not accepted:
+            return
+
+        if not self._editor_panel.highlight_line(line_number):
+            self.statusBar().showMessage(
+                self._tr("goto_line.invalid").format(line=line_number),
+            )
 
     def open_settings(self) -> None:
         """Open application settings dialog."""
@@ -769,6 +796,7 @@ class MainWindow(QMainWindow):
         self._paste_action.setText(self._tr("edit.paste"))
         self._find_action.setText(self._tr("edit.find"))
         self._replace_action.setText(self._tr("edit.replace"))
+        self._goto_line_action.setText(self._tr("edit.goto_line"))
         self._messages_action.setText(self._tr("edit.messages"))
         self._update_issues_button(
             self._issues_total,

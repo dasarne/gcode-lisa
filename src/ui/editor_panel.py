@@ -464,12 +464,12 @@ class EditorPanel(QWidget):
         assert document is not None
         document.setModified(modified)
 
-    def highlight_line(self, line_number: int) -> None:
+    def highlight_line(self, line_number: int) -> bool:
         """Scroll to and select the given 1-based line in the editor."""
         doc = self._document()
         block = doc.findBlockByLineNumber(line_number - 1)
         if not block.isValid():
-            return
+            return False
         update_single_line_selection(
             self._selection_state,
             line_number,
@@ -482,6 +482,7 @@ class EditorPanel(QWidget):
         self._suppress_cursor_events = False
         self._text_edit.centerCursor()
         self._apply_extra_selections(cursor)
+        return True
 
     def highlight_lines(self, line_numbers: list[int]) -> None:
         """Highlight a non-contiguous set of 1-based line numbers."""

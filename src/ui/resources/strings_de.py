@@ -73,6 +73,7 @@ STRINGS: dict[str, str] = {
     "edit.paste": "&Einfügen",
     "edit.find": "&Suchen",
     "edit.replace": "&Ersetzen",
+    "edit.goto_line": "&Gehe zu Zeile…",
     "edit.messages": "&Meldungen",
     "edit.find_prompt": "Suchbegriff:",
     "edit.find_not_found": "Kein Treffer gefunden.",
@@ -104,6 +105,9 @@ STRINGS: dict[str, str] = {
     "find.replace_placeholder": "Ersetzungstext...",
     "find.status.empty_search": "Leerer Suchbegriff",
     "find.status.regex_error": "Regex-Fehler: {error}",
+    "goto_line.title": "Gehe zu Zeile",
+    "goto_line.label": "Zeilennummer:",
+    "goto_line.invalid": "Ungültige Zeilennummer: {line}",
 
     # -----------------------------------------------------------------------
     # About dialog
